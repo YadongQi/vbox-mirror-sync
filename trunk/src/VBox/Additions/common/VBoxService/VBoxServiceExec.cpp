@@ -283,9 +283,10 @@ static int VBoxServiceExecCreateArgV(const char *pszExec, const char *pszArgs, c
             }
 
             /* add it */
-            papszArgs[cUsed++] = RTStrDupN(pszArgs, (uintptr_t)pszEnd - (uintptr_t)pszArgs);
-            if (!papszArgs[cUsed++])
+            papszArgs[cUsed] = RTStrDupN(pszArgs, (uintptr_t)pszEnd - (uintptr_t)pszArgs);
+            if (!papszArgs[cUsed])
                 break;
+            cUsed++;
 
             /* advance */
             pszArgs = pszEnd;
@@ -326,7 +327,6 @@ DECLCALLBACK(int) VBoxServiceExecWorker(bool volatile *pfShutdown)
     bool        fBitchedAboutMissingSysPrepCmd = false;
     for (;;)
     {
-#if 0 /** @todo r=bird: This code needs reviewing and testing before it can be enabled. */
         if (!fSysprepDone)
         {
             /*
@@ -341,7 +341,7 @@ DECLCALLBACK(int) VBoxServiceExecWorker(bool volatile *pfShutdown)
             if (RT_SUCCESS(rc) && !*pszSysprepExec)
                 rc = VERR_NOT_FOUND;
 #else
-            /* Predefined sys. */
+            /* Predefined sysprep. */
             int  rc = VINF_SUCCESS;
             char szSysprepCmd[RTPATH_MAX] = "C:\\sysprep\\sysprep.exe";
             OSVERSIONINFOEX OSInfoEx;
@@ -349,11 +349,11 @@ DECLCALLBACK(int) VBoxServiceExecWorker(bool volatile *pfShutdown)
             OSInfoEx.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
             if (    GetVersionEx((LPOSVERSIONINFO) &OSInfoEx)
                 &&  OSInfoEx.dwPlatformId == VER_PLATFORM_WIN32_NT
-                &&  OSInfoEx.dwMajorVersion >= 6 /* Vista */)
+                &&  OSInfoEx.dwMajorVersion >= 6 /* Vista or later */)
             {
-                rc = RTEnvGetEx(RTENV_DEFAULT, "windir", szSysPrepCmd, sizeof(szSysPrepCmd), NULL);
+                rc = RTEnvGetEx(RTENV_DEFAULT, "windir", szSysprepCmd, sizeof(szSysprepCmd), NULL);
                 if (RT_SUCCESS(rc))
-                    rc = RTPathAppend(szSysPrepCmd, sizeof(szSysPrepCmd), "system32\\sysprep\\sysprep.exe");
+                    rc = RTPathAppend(szSysprepCmd, sizeof(szSysprepCmd), "system32\\sysprep\\sysprep.exe");
             }
             pszSysprepExec = szSysprepCmd;
 #endif
@@ -423,7 +423,7 @@ DECLCALLBACK(int) VBoxServiceExecWorker(bool volatile *pfShutdown)
                     }
                     RTStrFree(pszSysprepArgs);
                 }
-#ifndef SYSPREP_WITH_CMD
+#ifdef SYSPREP_WITH_CMD
                 RTStrFree(pszSysprepExec);
 #endif
             }
@@ -442,7 +442,6 @@ DECLCALLBACK(int) VBoxServiceExecWorker(bool volatile *pfShutdown)
                 fSysprepDone = true;
             }
         }
-#endif /* temporarily disabled. */
 
 #ifdef FULL_FEATURED_EXEC
         1. Read the command - value, timestamp and flags.

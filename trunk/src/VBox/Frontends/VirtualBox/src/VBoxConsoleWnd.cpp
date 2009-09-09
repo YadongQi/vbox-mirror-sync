@@ -71,6 +71,7 @@
 # include <iprt/ldr.h>
 #endif
 
+#include <iprt/buildconfig.h>
 #include <iprt/param.h>
 #include <iprt/path.h>
 
@@ -810,11 +811,14 @@ bool VBoxConsoleWnd::openView (const CSession &session)
 
 #ifdef VBOX_WITH_VIDEOHWACCEL
     /* Need to force the QGL framebuffer in case 2D Video Acceleration is supported & enabled */
-    if (cmachine.GetAccelerate2DVideoEnabled() && VBoxGlobal::isAcceleration2DVideoAvailable())
-        mode = vboxGlobal().vmAcceleration2DVideoRenderMode();
+    bool bAccelerate2DVideo = cmachine.GetAccelerate2DVideoEnabled() && VBoxGlobal::isAcceleration2DVideoAvailable();
 #endif
 
-    console = new VBoxConsoleView (this, cconsole, mode, centralWidget());
+    console = new VBoxConsoleView (this, cconsole, mode,
+#ifdef VBOX_WITH_VIDEOHWACCEL
+                    bAccelerate2DVideo,
+#endif
+                    centralWidget());
     static_cast <QGridLayout*> (centralWidget()->layout())->addWidget (console, 1, 1, Qt::AlignVCenter | Qt::AlignHCenter);
 
     /* Mini toolbar */
@@ -1643,7 +1647,11 @@ void VBoxConsoleWnd::retranslateUi()
 #endif
 
 #ifdef VBOX_BLEEDING_EDGE
-    caption_prefix += QString(" EXPERIMENTAL build "VBOX_VERSION_STRING" r"VBOX_SVN_REV" - "VBOX_BLEEDING_EDGE);
+    caption_prefix += QString(" EXPERIMENTAL build ")
+                   + QString(RTBldCfgVersion())
+                   + QString("r")
+                   + QString(RTBldCfgRevisionStr()) 
+                   + QString(" - "VBOX_BLEEDING_EDGE);
 #endif
     /*
      *  Note: All action shortcuts should be added to the menu text in the

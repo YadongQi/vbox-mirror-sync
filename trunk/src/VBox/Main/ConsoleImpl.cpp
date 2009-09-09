@@ -1056,19 +1056,19 @@ Console::saveStateFileExec (PSSMHANDLE pSSM, void *pvUser)
  *  @param pvUser       pointer to Console
  *  @param uVersion     Console unit version.
  *                      Should match sSSMConsoleVer.
- *  @param uPhase       The data phase.
+ *  @param uPass        The data pass.
  *
  *  @note Should locks the Console object for writing, if necessary.
  */
 //static
 DECLCALLBACK(int)
-Console::loadStateFileExec(PSSMHANDLE pSSM, void *pvUser, uint32_t uVersion, uint32_t uPhase)
+Console::loadStateFileExec(PSSMHANDLE pSSM, void *pvUser, uint32_t uVersion, uint32_t uPass)
 {
     LogFlowFunc (("\n"));
 
     if (SSM_VERSION_MAJOR_CHANGED(uVersion, sSSMConsoleVer))
         return VERR_VERSION_MISMATCH;
-    Assert(uPhase == SSM_PHASE_FINAL); NOREF(uPhase);
+    Assert(uPass == SSM_PASS_FINAL); NOREF(uPass);
 
     Console *that = static_cast<Console *>(pvUser);
     AssertReturn(that, VERR_INVALID_PARAMETER);
@@ -2385,15 +2385,18 @@ STDMETHODIMP Console::TakeSnapshot(IN_BSTR aName,
     /* memorize the current machine state */
     MachineState_T lastMachineState = mMachineState;
 
+#ifndef VBOX_WITH_LIVE_MIGRATION /** @todo update the API docs. */
     if (mMachineState == MachineState_Running)
     {
         HRESULT rc = Pause();
         CheckComRCReturnRC(rc);
     }
+#endif
 
     HRESULT rc = S_OK;
 
-    bool fTakingSnapshotOnline = (mMachineState == MachineState_Paused);
+    bool const fTakingSnapshotOnline = (   mMachineState == MachineState_Running
+                                        || mMachineState == MachineState_Paused);
 
     /*
      *  create a descriptionless VM-side progress object
@@ -2449,8 +2452,7 @@ STDMETHODIMP Console::TakeSnapshot(IN_BSTR aName,
             break;
 
         /*
-         *  state file is non-null only when the VM is paused
-         *  (i.e. creating a snapshot online)
+         *  The state file is non-null only when creating a online or live snapshot.
          */
         ComAssertBreak(    (!stateFilePath.isNull() && fTakingSnapshotOnline)
                         || (stateFilePath.isNull() && !fTakingSnapshotOnline),
@@ -7315,6 +7317,7 @@ DECLCALLBACK (int) Console::saveStateThread (RTTHREAD Thread, void *pvUser)
 
         int vrc = VMR3Save(that->mpVM,
                            task->mSavedStateFile.c_str(),
+                           task->mIsSnapshot /*fContinueAfterwards*/,
                            Console::stateProgressCallback,
                            static_cast<VMProgressTask*>(task.get()));
         if (VBOX_FAILURE (vrc))

@@ -566,6 +566,26 @@
 #define VERR_SSM_GCPHYS_OVERFLOW                (-1849)
 /** Trying to read a 64-bit guest virtual address into a 32-bit variable. */
 #define VERR_SSM_GCPTR_OVERFLOW                 (-1850)
+/** Vote for another pass.  */
+#define VINF_SSM_VOTE_FOR_ANOTHER_PASS          1851
+/** Vote for giving up.  */
+#define VERR_SSM_VOTE_FOR_GIVING_UP             (-1852)
+/** Giving up a live snapshot/migration attempt because of too many passes. */
+#define VERR_SSM_TOO_MANY_PASSES                (-1853)
+/** Giving up a live snapshot/migration attempt because the state grew to
+ * big. */
+#define VERR_SSM_STATE_GREW_TOO_BIG             (-1854)
+/** Giving up a live snapshot attempt because we're low on disk space.  */
+#define VERR_SSM_LOW_ON_DISK_SPACE              (-1855)
+/** The machine was powered off while saving. */
+#define VERR_SSM_LIVE_POWERED_OFF               (-1856)
+/** The live snapshot/migration operation was cancelled. */
+#define VERR_SSM_LIVE_CANCELLED                 (-1857)
+/** The live snapshot/migration operation was aborted because of a guru
+ *  meditation. */
+#define VERR_SSM_LIVE_GURU_MEDITATION           (-1858)
+/** The VM was paused while saving, don't resume execution. */
+#define VINF_SSM_LIVE_PAUSED                    1859
 /** @} */
 
 
@@ -1001,7 +1021,7 @@
  * The PDMDEVREG::pfnAttach callback function is NULL. */
 #define VERR_PDM_DEVICE_NO_RT_ATTACH                (-2853)
 /** The driver doesn't support runtime driver attaching.
- * The PDMDRVREG::pfnAttach callback function is NULL. */ 
+ * The PDMDRVREG::pfnAttach callback function is NULL. */
 #define VERR_PDM_DRIVER_NO_RT_ATTACH                (-2854)
 /** Invalid host interface version. */
 #define VERR_PDM_HIF_INVALID_VERSION                (-2855)

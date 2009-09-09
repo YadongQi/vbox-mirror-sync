@@ -34,9 +34,9 @@
 #include <VBox/pgm.h>
 #include <VBox/err.h>
 #include <VBox/vm.h> /* for VM_IS_EMT */
-#include <VBox/version.h>
 
 #include <iprt/assert.h>
+#include <iprt/buildconfig.h>
 #include <iprt/string.h>
 #include <iprt/time.h>
 #ifndef IN_RC
@@ -1631,10 +1631,10 @@ static DECLCALLBACK(int) vmmdevRequestHandler(PPDMDEVINS pDevIns, void *pvUser, 
                                ("%#x < %#x\n", pRequestHeader->size, sizeof(VMMDevReqLogString)),
                                pRequestHeader->rc = VERR_INVALID_PARAMETER);
             VMMDevReqHostVersion *pReqHostVer = (VMMDevReqHostVersion*)pRequestHeader;
-            pReqHostVer->major = VBOX_VERSION_MAJOR;
-            pReqHostVer->minor = VBOX_VERSION_MINOR;
-            pReqHostVer->build = VBOX_VERSION_BUILD;
-            pReqHostVer->revision = VBOX_SVN_REV;
+            pReqHostVer->major = RTBldCfgVersionMajor();
+            pReqHostVer->minor = RTBldCfgVersionMinor();
+            pReqHostVer->build = RTBldCfgVersionBuild();
+            pReqHostVer->revision = RTBldCfgRevision();
             pReqHostVer->features = VMMDEV_HVF_HGCM_PHYS_PAGE_LIST;
             pReqHostVer->header.rc = VINF_SUCCESS;
             break;
@@ -2160,9 +2160,9 @@ static DECLCALLBACK(int) vmmdevSaveState(PPDMDEVINS pDevIns, PSSMHANDLE pSSMHand
  * @param   pDevIns     The device instance.
  * @param   pSSMHandle  The handle to the saved state.
  * @param   uVersion    The data unit version number.
- * @param   uPhase      The data phase.
+ * @param   uPass       The data pass.
  */
-static DECLCALLBACK(int) vmmdevLoadState(PPDMDEVINS pDevIns, PSSMHANDLE pSSMHandle, uint32_t uVersion, uint32_t uPhase)
+static DECLCALLBACK(int) vmmdevLoadState(PPDMDEVINS pDevIns, PSSMHANDLE pSSMHandle, uint32_t uVersion, uint32_t uPass)
 {
     /** @todo The code load code is assuming we're always loaded into a freshly
      *        constructed VM. */
@@ -2170,7 +2170,7 @@ static DECLCALLBACK(int) vmmdevLoadState(PPDMDEVINS pDevIns, PSSMHANDLE pSSMHand
     if (   SSM_VERSION_MAJOR_CHANGED(uVersion, VMMDEV_SSM_VERSION)
         || (SSM_VERSION_MINOR(uVersion) < 6))
         return VERR_SSM_UNSUPPORTED_DATA_UNIT_VERSION;
-    Assert(uPhase == SSM_PHASE_FINAL); NOREF(uPhase);
+    Assert(uPass == SSM_PASS_FINAL); NOREF(uPass);
 
     SSMR3GetU32(pSSMHandle, &pThis->hypervisorSize);
     SSMR3GetU32(pSSMHandle, &pThis->mouseCapabilities);

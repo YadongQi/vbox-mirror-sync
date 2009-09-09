@@ -71,6 +71,9 @@ public:
     VBoxConsoleView (VBoxConsoleWnd *mainWnd,
                      const CConsole &console,
                      VBoxDefs::RenderMode rm,
+#ifdef VBOX_WITH_VIDEOHWACCEL
+                     bool accelerate2DVideo,
+#endif
                      QWidget *parent = 0);
     ~VBoxConsoleView();
 
@@ -133,6 +136,10 @@ public:
     void updateSliders();
 
     void requestToResize (const QSize &aSize);
+
+#ifdef VBOX_WITH_VIDEOHWACCEL
+    void scrollContentsBy (int dx, int dy);
+#endif
 
 #if defined(Q_WS_MAC)
     void updateDockIcon();
@@ -294,6 +301,9 @@ private:
 
 
     VBoxDefs::RenderMode mode;
+#ifdef VBOX_WITH_VIDEOHWACCEL
+    bool mAccelerate2DVideo;
+#endif
 
     QRegion mLastVisibleRegion;
     QSize mNormalSize;

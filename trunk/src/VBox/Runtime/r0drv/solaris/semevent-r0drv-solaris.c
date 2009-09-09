@@ -138,7 +138,26 @@ RTDECL(int)  RTSemEventSignal(RTSEMEVENT EventSem)
                     VERR_INVALID_HANDLE);
     RT_ASSERT_INTS_ON();
 
-    mutex_enter(&pEventInt->Mtx);
+    /*
+     * If we're in interrupt context we need to unpin the underlying current
+     * thread as this could lead to a deadlock (see #4259 for the full explanation)
+     *
+     * Note! This assumes nobody is using the RTThreadPreemptDisable in an
+     *       interrupt context and expects it to work right.  The swtch will
+     *       result in a voluntary preemption.  To fix this, we would have to
+     *       do our own counting in RTThreadPreemptDisable/Restore like we do
+     *       on systems which doesn't do preemption (OS/2, linux, ...) and
+     *       check whether preemption was disabled via RTThreadPreemptDisable
+     *       or not and only call swtch if RTThreadPreemptDisable wasn't called.
+     */
+    int fAcquired = mutex_tryenter(&pEventInt->Mtx);
+    if (!fAcquired)
+    {
+        if (curthread->t_intr && getpil() < DISP_LEVEL)
+            swtch();
+
+        mutex_enter(&pEventInt->Mtx);
+    }
 
     if (pEventInt->cWaiters > 0)
     {

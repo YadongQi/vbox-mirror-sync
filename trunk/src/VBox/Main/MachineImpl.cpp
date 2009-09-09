@@ -2114,7 +2114,7 @@ STDMETHODIMP Machine::AttachHardDisk(IN_BSTR aId,
                                      IN_BSTR aControllerName, LONG aControllerPort,
                                      LONG aDevice)
 {
-    LogFlowThisFunc (("aControllerName=\"%ls\" aControllerPort=%ld aDevice=%ld\n",
+    LogFlowThisFunc(("aControllerName=\"%ls\" aControllerPort=%ld aDevice=%ld\n",
                      aControllerName, aControllerPort, aDevice));
 
     AutoCaller autoCaller(this);
@@ -2130,14 +2130,15 @@ STDMETHODIMP Machine::AttachHardDisk(IN_BSTR aId,
 
     /// @todo NEWMEDIA implicit machine registration
     if (!mData->mRegistered)
-        return setError (VBOX_E_INVALID_OBJECT_STATE,
-            tr ("Cannot attach hard disks to an unregistered machine"));
+        return setError(VBOX_E_INVALID_OBJECT_STATE,
+                        tr("Cannot attach hard disks to an unregistered machine"));
 
     AssertReturn(mData->mMachineState != MachineState_Saved, E_FAIL);
 
-    if (Global::IsOnlineOrTransient (mData->mMachineState))
-        return setError (VBOX_E_INVALID_VM_STATE,
-            tr ("Invalid machine state: %d"), mData->mMachineState);
+    if (Global::IsOnlineOrTransient(mData->mMachineState))
+        return setError(VBOX_E_INVALID_VM_STATE,
+                        tr("Invalid machine state: %d"),
+                        mData->mMachineState);
 
     /* Check for an existing controller. */
     ComObjPtr<StorageController> ctl;
@@ -2157,16 +2158,15 @@ STDMETHODIMP Machine::AttachHardDisk(IN_BSTR aId,
         || (aDevice < 0)
         || (aDevice >= (LONG)devicesPerPort)
        )
-        return setError (E_INVALIDARG,
-            tr ("The port and/or count parameter are out of range [%lu:%lu]"),
-                portCount, devicesPerPort);
+        return setError(E_INVALIDARG,
+                        tr("The port and/or count parameter are out of range [%lu:%lu]"),
+                        portCount,
+                        devicesPerPort);
 
     /* check if the device slot is already busy */
-    HDData::AttachmentList::const_iterator it =
-        std::find_if (mHDData->mAttachments.begin(),
-                      mHDData->mAttachments.end(),
-                      HardDiskAttachment::EqualsTo (aControllerName, aControllerPort, aDevice));
-
+    HDData::AttachmentList::const_iterator it = std::find_if(mHDData->mAttachments.begin(),
+                                                             mHDData->mAttachments.end(),
+                                                             HardDiskAttachment::EqualsTo(aControllerName, aControllerPort, aDevice));
     if (it != mHDData->mAttachments.end())
     {
         ComObjPtr<HardDisk> hd = (*it)->hardDisk();
@@ -2188,10 +2188,10 @@ STDMETHODIMP Machine::AttachHardDisk(IN_BSTR aId,
 
     AutoWriteLock hdLock (hd);
 
-    if (std::find_if (mHDData->mAttachments.begin(),
-                      mHDData->mAttachments.end(),
-                      HardDiskAttachment::RefersTo (hd)) !=
-            mHDData->mAttachments.end())
+    if (std::find_if(mHDData->mAttachments.begin(),
+                     mHDData->mAttachments.end(),
+                     HardDiskAttachment::RefersTo (hd))
+         != mHDData->mAttachments.end())
     {
         return setError(VBOX_E_OBJECT_IN_USE,
                         tr("Hard disk '%ls' is already attached to this virtual machine"),
@@ -7924,6 +7924,16 @@ STDMETHODIMP SessionMachine::BeginTakingSnapshot(IConsole *aInitiator,
     /* saveSettings() needs mParent lock */
     AutoMultiWriteLock2 alock (mParent, this);
 
+#ifdef VBOX_WITH_LIVE_MIGRATION
+    AssertReturn(    (    !Global::IsOnlineOrTransient (mData->mMachineState)
+                       || mData->mMachineState == MachineState_Paused
+                       || mData->mMachineState == MachineState_Running
+                     )
+                  && mSnapshotData.mLastState == MachineState_Null
+                  && mSnapshotData.mSnapshot.isNull()
+                  && mSnapshotData.mServerProgress.isNull()
+                  && mSnapshotData.mCombinedProgress.isNull(), E_FAIL);
+#else
     AssertReturn(    (    !Global::IsOnlineOrTransient (mData->mMachineState)
                        || mData->mMachineState == MachineState_Paused
                      )
@@ -7931,8 +7941,10 @@ STDMETHODIMP SessionMachine::BeginTakingSnapshot(IConsole *aInitiator,
                   && mSnapshotData.mSnapshot.isNull()
                   && mSnapshotData.mServerProgress.isNull()
                   && mSnapshotData.mCombinedProgress.isNull(), E_FAIL);
+#endif
 
-    bool fTakingSnapshotOnline = (mData->mMachineState == MachineState_Paused);
+    bool const fTakingSnapshotOnline = (   mData->mMachineState == MachineState_Running
+                                        || mData->mMachineState == MachineState_Paused);
 
     if (    !fTakingSnapshotOnline
          && mData->mMachineState != MachineState_Saved)

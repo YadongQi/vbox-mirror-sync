@@ -43,6 +43,34 @@ crStateFramebufferObjectInit(CRContext *ctx)
     fbo->renderbuffers = crAllocHashtable();
 }
 
+static void crStateFreeFBO(void *data)
+{
+    CRFramebufferObject *pObj = (CRFramebufferObject *)data;
+
+#ifndef IN_GUEST
+    if (diff_api.DeleteFramebuffersEXT)
+    {
+        diff_api.DeleteFramebuffersEXT(1, &pObj->id);
+    }
+#endif
+
+    crFree(pObj);
+}
+
+static void crStateFreeRBO(void *data)
+{
+    CRRenderbufferObject *pObj = (CRRenderbufferObject *)data;
+
+#ifndef IN_GUEST
+    if (diff_api.DeleteRenderbuffersEXT)
+    {
+        diff_api.DeleteRenderbuffersEXT(1, &pObj->id);
+    }
+#endif
+
+    crFree(pObj);
+}
+
 DECLEXPORT(void) STATE_APIENTRY
 crStateFramebufferObjectDestroy(CRContext *ctx)
 {
@@ -51,8 +79,8 @@ crStateFramebufferObjectDestroy(CRContext *ctx)
     fbo->framebuffer = NULL;
     fbo->renderbuffer = NULL;
 
-    crFreeHashtable(fbo->framebuffers, crFree);
-    crFreeHashtable(fbo->renderbuffers, crFree);
+    crFreeHashtable(fbo->framebuffers, crStateFreeFBO);
+    crFreeHashtable(fbo->renderbuffers, crStateFreeRBO);
 }
 
 DECLEXPORT(void) STATE_APIENTRY
@@ -245,7 +273,7 @@ crStateBindFramebufferEXT(GLenum target, GLuint framebuffer)
         if (!fbo->framebuffer)
         {
             fbo->framebuffer = (CRFramebufferObject*) crCalloc(sizeof(CRFramebufferObject));
-            CRSTATE_FBO_CHECKERR(!fbo->renderbuffer, GL_OUT_OF_MEMORY, "glBindFramebufferEXT");
+            CRSTATE_FBO_CHECKERR(!fbo->framebuffer, GL_OUT_OF_MEMORY, "glBindFramebufferEXT");
             fbo->framebuffer->id = framebuffer;
             crStateInitFrameBuffer(fbo->framebuffer);
             crHashtableAdd(fbo->framebuffers, framebuffer, fbo->framebuffer);

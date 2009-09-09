@@ -186,6 +186,11 @@ VMMR3_SOURCES.amd64 = \
 VMMR3_SOURCES.darwin.x86 += \
 	VMMSwitcher/AMD64ToPAE.asm
 
+# SSM wish to know the build type, host os and arch.
+SSM.cpp_DEFS +=	\
+	KBUILD_TYPE=\"$(KBUILD_TYPE)\" \
+	KBUILD_TARGET=\"$(KBUILD_TARGET)\" \
+	KBUILD_TARGET_ARCH=\"$(KBUILD_TARGET_ARCH)\"
 
 #
 # The VMM DLL.
@@ -508,10 +513,6 @@ ifneq ($(filter pe lx,$(VBOX_LDR_FMT)),)
  	$(PATH_LIB)/SUPR0$(VBOX_SUFF_LIB)
 endif
 
-#
-# For vmmGetSvnRev.
-#
-VMMAll/VMMAll.cpp_DEFS = VBOX_SVN_REV=$(VBOX_SVN_REV)
 
 include	$(KBUILD_PATH)/subfooter.kmk
 

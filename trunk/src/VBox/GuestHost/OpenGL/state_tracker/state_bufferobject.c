@@ -54,6 +54,14 @@ static void crStateFreeBufferObject(void *data)
 {
     CRBufferObject *pObj = (CRBufferObject *)data;
     if (pObj->data) crFree(pObj->data);
+
+#ifndef IN_GUEST
+    if (diff_api.DeleteBuffersARB)
+    {
+        diff_api.DeleteBuffersARB(1, &pObj->name);
+    }
+#endif
+
     crFree(pObj);
 }
 
