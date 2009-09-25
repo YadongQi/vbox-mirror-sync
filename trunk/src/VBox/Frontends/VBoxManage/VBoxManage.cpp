@@ -522,11 +522,14 @@ static int handleStartVM(HandlerArg *a)
         Bstr env;
 #if defined(RT_OS_LINUX) || defined(RT_OS_SOLARIS)
         /* make sure the VM process will start on the same display as VBoxManage */
-        {
-            const char *display = RTEnvGet ("DISPLAY");
-            if (display)
-                env = Utf8StrFmt ("DISPLAY=%s", display);
-        }
+        Utf8Str str;
+        const char *pszDisplay = RTEnvGet("DISPLAY");
+        if (pszDisplay)
+            str = Utf8StrFmt("DISPLAY=%s\n", pszDisplay);
+        const char *pszXAuth = RTEnvGet("XAUTHORITY");
+        if (pszXAuth)
+            str.append(Utf8StrFmt("XAUTHORITY=%s\n", pszXAuth));
+        env = str;
 #endif
         ComPtr<IProgress> progress;
         CHECK_ERROR_RET(a->virtualBox, OpenRemoteSession(a->session, uuid, sessionType,
@@ -1194,7 +1197,7 @@ static int handleControlVM(HandlerArg *a)
                 dvdMedium->COMGETTER(Id)(uuid.asOutParam());
             else
                 uuid = Guid().toString();
-            CHECK_ERROR(machine, MountMedium(Bstr("IDE"), 1, 0, uuid));
+            CHECK_ERROR(machine, MountMedium(Bstr("IDE Controller"), 1, 0, uuid));
         }
         else if (!strcmp(a->argv[1], "floppyattach"))
         {
@@ -1249,7 +1252,7 @@ static int handleControlVM(HandlerArg *a)
                 }
             }
             floppyMedium->COMGETTER(Id)(uuid.asOutParam());
-            CHECK_ERROR(machine, MountMedium(Bstr("FD"), 0, 0, uuid));
+            CHECK_ERROR(machine, MountMedium(Bstr("Floppy Controller"), 0, 0, uuid));
         }
 #ifdef VBOX_WITH_MEM_BALLOONING
         else if (   !strcmp(a->argv[1], "--guestmemoryballoon")

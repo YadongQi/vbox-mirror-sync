@@ -208,8 +208,11 @@ public:
     AbstractItem (AbstractItem *aParent = 0);
     virtual ~AbstractItem();
 
-    AbstractItem* parent();
-    QUuid id();
+    AbstractItem* parent() const;
+    QUuid id() const;
+    QString machineId() const;
+
+    void setMachineId (const QString &aMchineId);
 
     virtual ItemType rtti() const = 0;
     virtual AbstractItem* childByPos (int aIndex) = 0;
@@ -227,6 +230,7 @@ protected:
 
     AbstractItem *mParent;
     QUuid         mId;
+    QString       mMachineId;
 };
 Q_DECLARE_METATYPE (AbstractItem::ItemType);
 
@@ -284,7 +288,7 @@ public:
     SlotsList ctrAllSlots() const;
     SlotsList ctrUsedSlots() const;
     DeviceTypeList ctrDeviceTypeList() const;
-    QStringList ctrAllMediumIds() const;
+    QStringList ctrAllMediumIds (bool aShowDiffs) const;
     QStringList ctrUsedMediumIds() const;
 
 private:
@@ -379,6 +383,7 @@ public:
         R_IsController,
         R_IsAttachment,
 
+        R_ToolTipType,
         R_IsMoreControllersPossible,
         R_IsMoreAttachmentsPossible,
 
@@ -423,6 +428,15 @@ public:
         R_AdderPoint
     };
 
+    enum ToolTipType
+    {
+        DefaultToolTip  = 0,
+        ExpanderToolTip = 1,
+        HDAdderToolTip  = 2,
+        CDAdderToolTip  = 3,
+        FDAdderToolTip  = 4
+    };
+
     StorageModel (QObject *aParent);
    ~StorageModel();
 
@@ -442,6 +456,8 @@ public:
     QModelIndex addAttachment (const QUuid &aCtrId, KDeviceType aDeviceType);
     void delAttachment (const QUuid &aCtrId, const QUuid &aAttId);
 
+    void setMachineId (const QString &aMachineId);
+
 private:
 
     Qt::ItemFlags flags (const QModelIndex &aIndex) const;
@@ -453,7 +469,10 @@ private:
 
     QPixmap mMinusPixmapEn;
     QPixmap mMinusPixmapDis;
+
+    ToolTipType mToolTipType;
 };
+Q_DECLARE_METATYPE (StorageModel::ToolTipType);
 
 /* Storage Delegate */
 class StorageDelegate : public QItemDelegate
@@ -484,7 +503,7 @@ public:
 
 signals:
 
-    void mediumChanged();
+    void storageChanged();
 
 protected:
 
@@ -499,6 +518,9 @@ protected:
     void showEvent (QShowEvent *aEvent);
 
 private slots:
+
+    void mediumUpdated (const VBoxMedium &aMedium);
+    void mediumRemoved (VBoxDefs::MediumType aType, const QString &aMediumId);
 
     void addController();
     void addIDEController();
@@ -526,6 +548,7 @@ private slots:
 
     void onDrawItemBranches (QPainter *aPainter, const QRect &aRect, const QModelIndex &aIndex);
 
+    void onMouseMoved (QMouseEvent *aEvent);
     void onMouseClicked (QMouseEvent *aEvent);
 
 private:
@@ -534,6 +557,8 @@ private:
     QString getWithMediaManager (VBoxDefs::MediumType aMediumType);
 
     void updateAdditionalObjects (KDeviceType aType);
+
+    QString generateUniqueName (const QString &aTemplate) const;
 
     CMachine mMachine;
     QIWidgetValidator *mValidator;

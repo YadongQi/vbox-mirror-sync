@@ -223,7 +223,7 @@ void VBoxNewVMWzd::revalidate (QIWidgetValidator *aWval)
     {
         valid = true;
         if (    (mGbHDA->isChecked())
-            &&  (mHDCombo->id().isNull())
+            &&  (vboxGlobal().findMedium (mHDCombo->id()).isNull())
             &&  (mExistRadio->isChecked()))
         {
             valid = false;
@@ -368,7 +368,7 @@ bool VBoxNewVMWzd::constructMachine()
         if (!session.isNull())
         {
             CMachine m = session.GetMachine();
-            m.AttachDevice ("IDE", 0, 0, KDeviceType_HardDisk, mHDCombo->id());
+            m.AttachDevice ("IDE Controller", 0, 0, KDeviceType_HardDisk, mHDCombo->id());
             if (m.isOk())
             {
                 m.SaveSettings();

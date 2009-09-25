@@ -23,27 +23,14 @@
 #define ____H_HOSTIMPL
 
 #include "VirtualBoxBase.h"
-#ifdef VBOX_WITH_USB
-# include "HostUSBDeviceImpl.h"
-# include "USBDeviceFilterImpl.h"
-# include "USBProxyService.h"
-# include "VirtualBoxImpl.h"
-#else
+
+class HostUSBDeviceFilter;
 class USBProxyService;
-#endif
-#include "HostPower.h"
-
-#ifdef RT_OS_LINUX
-# include <HostHardwareLinux.h>
-#endif
-
-#ifdef VBOX_WITH_RESOURCE_USAGE_API
-# include "PerformanceImpl.h"
-#endif /* VBOX_WITH_RESOURCE_USAGE_API */
-
 class VirtualBox;
 class SessionMachine;
 class Progress;
+class PerformanceCollector;
+class Medium;
 
 namespace settings
 {
@@ -53,7 +40,7 @@ namespace settings
 #include <list>
 
 class ATL_NO_VTABLE Host :
-    public VirtualBoxBaseWithChildren,
+    public VirtualBoxBase,
     public VirtualBoxSupportErrorInfoImpl<Host, IHost>,
     public VirtualBoxSupportTranslation<Host>,
     VBOX_SCRIPTABLE_IMPL(IHost)
@@ -116,13 +103,17 @@ public:
     HRESULT saveSettings(settings::Host &data);
 
 #ifdef VBOX_WITH_USB
-    typedef std::list <ComObjPtr<HostUSBDeviceFilter> > USBDeviceFilterList;
+    typedef std::list< ComObjPtr<HostUSBDeviceFilter> > USBDeviceFilterList;
 
     /** Must be called from under this object's lock. */
-    USBProxyService *usbProxyService() { return mUSBProxyService; }
+    USBProxyService* usbProxyService();
 
-    HRESULT onUSBDeviceFilterChange (HostUSBDeviceFilter *aFilter, BOOL aActiveChanged = FALSE);
-    void getUSBFilters(USBDeviceFilterList *aGlobalFiltes, VirtualBox::SessionMachineVector *aMachines);
+    HRESULT addChild(HostUSBDeviceFilter *pChild);
+    HRESULT removeChild(HostUSBDeviceFilter *pChild);
+    VirtualBox* parent();
+
+    HRESULT onUSBDeviceFilterChange(HostUSBDeviceFilter *aFilter, BOOL aActiveChanged = FALSE);
+    void getUSBFilters(USBDeviceFilterList *aGlobalFiltes);
     HRESULT checkUSBProxyService();
 #endif /* !VBOX_WITH_USB */
 
@@ -132,24 +123,18 @@ public:
 private:
 
 #if (defined(RT_OS_SOLARIS) || defined(RT_OS_FREEBSD)) && defined(VBOX_USE_LIBHAL)
-    bool getDVDInfoFromHal(std::list <ComObjPtr<Medium> > &list);
-    bool getFloppyInfoFromHal(std::list <ComObjPtr<Medium> > &list);
+    bool getDVDInfoFromHal(std::list< ComObjPtr<Medium> > &list);
+    bool getFloppyInfoFromHal(std::list< ComObjPtr<Medium> > &list);
 #endif
 
 #if defined(RT_OS_SOLARIS)
-    void parseMountTable(char *mountTable, std::list <ComObjPtr<Medium> > &list);
+    void parseMountTable(char *mountTable, std::list< ComObjPtr<Medium> > &list);
     bool validateDevice(const char *deviceNode, bool isCDROM);
 #endif
 
 #ifdef VBOX_WITH_USB
     /** specialization for IHostUSBDeviceFilter */
-    ComObjPtr<HostUSBDeviceFilter> getDependentChild (IHostUSBDeviceFilter *aFilter)
-    {
-        VirtualBoxBase *child = VirtualBoxBaseWithChildren::
-                                getDependentChild (ComPtr<IUnknown> (aFilter));
-        return child ? dynamic_cast <HostUSBDeviceFilter *> (child)
-                     : NULL;
-    }
+//     ComObjPtr<HostUSBDeviceFilter> getDependentChild(IHostUSBDeviceFilter *aFilter);
 #endif /* VBOX_WITH_USB */
 
 #ifdef VBOX_WITH_RESOURCE_USAGE_API
@@ -157,26 +142,9 @@ private:
     void unregisterMetrics (PerformanceCollector *aCollector);
 #endif /* VBOX_WITH_RESOURCE_USAGE_API */
 
-    ComObjPtr<VirtualBox, ComWeakRef> mParent;
-
-#ifdef VBOX_WITH_USB
-    USBDeviceFilterList mUSBDeviceFilters;
-
-    /** Pointer to the USBProxyService object. */
-    USBProxyService *mUSBProxyService;
-#endif /* VBOX_WITH_USB */
-
-#ifdef RT_OS_LINUX
-    /** Object with information about host drives */
-    VBoxMainDriveInfo mHostDrives;
-#endif
-    /* Features that can be queried with GetProcessorFeature */
-    BOOL fVTxAMDVSupported, fLongModeSupported, fPAESupported;
-    /* 3D hardware acceleration supported? */
-    BOOL f3DAccelerationSupported;
-
-    HostPowerService *mHostPowerService;
+    struct Data;        // opaque data structure, defined in HostImpl.cpp
+    Data *m;
 };
 
 #endif // ____H_HOSTIMPL
-/* vi: set tabstop=4 shiftwidth=4 expandtab: */
+

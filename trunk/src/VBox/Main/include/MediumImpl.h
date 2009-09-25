@@ -27,10 +27,9 @@
 
 #include <VBox/com/SupportErrorInfo.h>
 
-#include <VBox/VBoxHDD.h>
-
 class VirtualBox;
 class Progress;
+struct VM;
 
 namespace settings
 {
@@ -80,6 +79,7 @@ public:
     HRESULT init(VirtualBox *aVirtualBox,
                  CBSTR aLocation,
                  HDDOpenMode enOpenMode,
+                 DeviceType_T aDeviceType,
                  BOOL aSetImageId,
                  const Guid &aImageId,
                  BOOL aSetParentId,
@@ -315,7 +315,7 @@ protected:
 
 private:
 
-    HRESULT setLocation(const Utf8Str &aLocation);
+    HRESULT setLocation(const Utf8Str &aLocation, const Utf8Str &aFormat = Utf8Str());
     HRESULT setFormat(CBSTR aFormat);
 
     Utf8Str vdError(int aVRC);
@@ -323,7 +323,7 @@ private:
     static DECLCALLBACK(void) vdErrorCall(void *pvUser, int rc, RT_SRC_POS_DECL,
                                           const char *pszFormat, va_list va);
 
-    static DECLCALLBACK(int) vdProgressCall(PVM /* pVM */, unsigned uPercent,
+    static DECLCALLBACK(int) vdProgressCall(VM* /* pVM */, unsigned uPercent,
                                             void *pvUser);
 
     static DECLCALLBACK(bool) vdConfigAreKeysValid(void *pvUser,

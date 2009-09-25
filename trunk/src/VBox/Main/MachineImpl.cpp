@@ -53,8 +53,6 @@
 # include "USBProxyService.h"
 #endif
 
-#include "VirtualBoxXMLUtil.h"
-
 #include "Logging.h"
 #include "Performance.h"
 
@@ -516,15 +514,13 @@ HRESULT Machine::init(VirtualBox *aParent,
                         mSerialPorts [slot]->applyDefaults (aOsType);
                 }
 
-                /* The default is that the VM has at least one IDE controller
-                 * which can't be disabled (because of the DVD stuff which is
-                 * not in the StorageDevice implementation at the moment)
-                 */
+                /* The default is that the VM has at least one IDE controller. */
+                /** @todo does this forced IDE controller make sense any more? */
                 ComPtr<IStorageController> pController;
-                rc = AddStorageController(Bstr("IDE"), StorageBus_IDE, pController.asOutParam());
+                rc = AddStorageController(Bstr("IDE Controller"), StorageBus_IDE, pController.asOutParam());
                 CheckComRCReturnRC(rc);
                 ComObjPtr<StorageController> ctl;
-                rc = getStorageControllerByName(Bstr("IDE"), ctl, true);
+                rc = getStorageControllerByName(Bstr("IDE Controller"), ctl, true);
                 CheckComRCReturnRC(rc);
                 ctl->COMSETTER(ControllerType)(StorageControllerType_PIIX4);
             }
@@ -1976,10 +1972,17 @@ STDMETHODIMP Machine::AttachDevice(IN_BSTR aControllerName,
                                       aDevice)))
     {
         Medium *pMedium = pAttachTemp->medium();
-        AutoReadLock mediumLock(pMedium);
-        return setError(VBOX_E_OBJECT_IN_USE,
-                        tr("Medium '%ls' is already attached to device slot %d on port %d of controller '%ls' of this virtual machine"),
-                        pMedium->locationFull().raw(), aDevice, aControllerPort, aControllerName);
+        if (pMedium)
+        {
+            AutoReadLock mediumLock(pMedium);
+            return setError(VBOX_E_OBJECT_IN_USE,
+                            tr("Medium '%ls' is already attached to device slot %d on port %d of controller '%ls' of this virtual machine"),
+                            pMedium->locationFull().raw(), aDevice, aControllerPort, aControllerName);
+        }
+        else
+            return setError(VBOX_E_OBJECT_IN_USE,
+                            tr("Device is already attached to slot %d on port %d of controller '%ls' of this virtual machine"),
+                            aDevice, aControllerPort, aControllerName);
     }
 
     Guid id(aId);
@@ -2070,8 +2073,8 @@ STDMETHODIMP Machine::AttachDevice(IN_BSTR aControllerName,
 
     AutoWriteLock mediumLock(medium);
 
-    if ((pAttachTemp = findAttachment(mMediaData->mAttachments,
-                                      medium)))
+    if (   (pAttachTemp = findAttachment(mMediaData->mAttachments, medium))
+        && !medium.isNull())
     {
         return setError(VBOX_E_OBJECT_IN_USE,
                         tr("Hard disk '%ls' is already attached to this virtual machine"),
@@ -2139,7 +2142,9 @@ STDMETHODIMP Machine::AttachDevice(IN_BSTR aControllerName,
                     uint32_t level = 0;
                     MediumAttachment *pAttach = *it;
                     ComObjPtr<Medium> pMedium = pAttach->medium();
-                    Assert(!pMedium.isNull());
+                    Assert(!pMedium.isNull() || pAttach->type() != DeviceType_HardDisk);
+                    if (pMedium.isNull())
+                        continue;
 
                     if (pMedium->base(&level).equalsTo(medium))
                     {
@@ -2204,8 +2209,14 @@ STDMETHODIMP Machine::AttachDevice(IN_BSTR aControllerName,
                      it != snapAtts.end();
                      ++it)
                 {
+                    MediumAttachment *pAttach = *it;
+                    ComObjPtr<Medium> pMedium = pAttach->medium();
+                    Assert(!pMedium.isNull() || pAttach->type() != DeviceType_HardDisk);
+                    if (pMedium.isNull())
+                        continue;
+
                     uint32_t level = 0;
-                    if ((*it)->medium()->base(&level).equalsTo(medium))
+                    if (pMedium->base(&level).equalsTo(medium))
                     {
                         /* matched device, channel and bus (i.e. attached to the
                          * same place) will win and immediately stop the search;
@@ -5268,11 +5279,11 @@ HRESULT Machine::loadStorageControllers(const settings::Storage &data,
 /**
  * @param aNode        <HardDiskAttachments> node.
  * @param aRegistered  true when the machine is being loaded on VirtualBox
- *                      startup, or when a snapshot is being loaded (wchich
- *                      currently can happen on startup only)
+ *                     startup, or when a snapshot is being loaded (wchich
+ *                     currently can happen on startup only)
  * @param aSnapshotId  pointer to the snapshot ID if this is a snapshot machine
  *
- * @note Lock mParent for reading and hard disks for writing before calling.
+ * @note Lock mParent  for reading and hard disks for writing before calling.
  */
 HRESULT Machine::loadStorageDevices(StorageController *aStorageController,
                                     const settings::StorageController &data,
@@ -5293,6 +5304,28 @@ HRESULT Machine::loadStorageDevices(StorageController *aStorageController,
                         tr("Unregistered machine '%ls' cannot have storage devices attached (found %d attachments)"),
                         mUserData->mName.raw(),
                         data.llAttachedDevices.size());
+
+    /* paranoia: detect duplicate attachments */
+    for (settings::AttachedDevicesList::const_iterator it = data.llAttachedDevices.begin();
+         it != data.llAttachedDevices.end();
+         ++it)
+    {
+        for (settings::AttachedDevicesList::const_iterator it2 = it;
+             it2 != data.llAttachedDevices.end();
+             ++it2)
+        {
+            if (it == it2)
+                continue;
+
+            if (   (*it).lPort == (*it2).lPort
+                && (*it).lDevice == (*it2).lDevice)
+            {
+                return setError(E_FAIL,
+                                tr("Duplicate attachments for storage controller '%s', port %d, device %d of the virtual machine '%ls'"),
+                                aStorageController->name().raw(), (*it).lPort, (*it).lDevice, mUserData->mName.raw());
+            }
+        }
+    }
 
     for (settings::AttachedDevicesList::const_iterator it = data.llAttachedDevices.begin();
          it != data.llAttachedDevices.end();

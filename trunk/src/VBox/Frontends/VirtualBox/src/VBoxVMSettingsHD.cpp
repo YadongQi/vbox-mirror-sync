@@ -39,7 +39,7 @@
 #include "VBoxNewHDWzd.h"
 
 /* String Tags */
-const char *firstAvailable = "first available";
+const char *firstAvailableId = "first available";
 
 /* Type converters */
 VBoxDefs::MediumType typeToLocal (KDeviceType aType)
@@ -113,23 +113,23 @@ PixmapPool::PixmapPool (QObject *aParent)
 {
     mPool.resize (MaxIndex);
 
-    mPool [AddControllerEn]  = QPixmap (":/add_host_iface_16px.png"); // TODO Update Icon!!!
-    mPool [AddControllerDis] = QPixmap (":/add_host_iface_disabled_16px.png"); // TODO Update Icon!!!
-    mPool [DelControllerEn]  = QPixmap (":/remove_host_iface_16px.png"); // TODO Update Icon!!!
-    mPool [DelControllerDis] = QPixmap (":/remove_host_iface_disabled_16px.png"); // TODO Update Icon!!!
+    mPool [AddControllerEn]  = QPixmap (":/add_host_iface_16px.png"); // TODO (":/controller_add_16px.png");
+    mPool [AddControllerDis] = QPixmap (":/add_host_iface_disabled_16px.png"); // TODO (":/controller_add_disabled_16px.png");
+    mPool [DelControllerEn]  = QPixmap (":/remove_host_iface_16px.png"); // TODO (":/controller_remove_16px.png");
+    mPool [DelControllerDis] = QPixmap (":/remove_host_iface_disabled_16px.png"); // TODO (":/controller_remove_disabled_16px.png");
 
-    mPool [AddAttachmentEn]  = QPixmap (":/vdm_add_16px.png"); // TODO Update Icon!!!
-    mPool [AddAttachmentDis] = QPixmap (":/vdm_add_disabled_16px.png"); // TODO Update Icon!!!
-    mPool [DelAttachmentEn]  = QPixmap (":/vdm_remove_16px.png"); // TODO Update Icon!!!
-    mPool [DelAttachmentDis] = QPixmap (":/vdm_remove_disabled_16px.png"); // TODO Update Icon!!!
+    mPool [AddAttachmentEn]  = QPixmap (":/attachment_add_16px.png");
+    mPool [AddAttachmentDis] = QPixmap (":/attachment_add_disabled_16px.png");
+    mPool [DelAttachmentEn]  = QPixmap (":/attachment_remove_16px.png");
+    mPool [DelAttachmentDis] = QPixmap (":/attachment_remove_disabled_16px.png");
 
     mPool [IDEController]    = QPixmap (":/ide_16px.png");
     mPool [SATAController]   = QPixmap (":/sata_16px.png");
     mPool [SCSIController]   = QPixmap (":/scsi_16px.png");
-    mPool [FloppyController] = QPixmap (":/fd_16px.png"); // TODO Update Icon!!!
+    mPool [FloppyController] = QPixmap (":/floppy_16px.png");
 
-    mPool [HDAttachmentEn]   = QPixmap (":/hd_16px.png"); // TODO Update Icon!!!
-    mPool [HDAttachmentDis]  = QPixmap (":/hd_disabled_16px.png"); // TODO Update Icon!!!
+    mPool [HDAttachmentEn]   = QPixmap (":/hd_16px.png");
+    mPool [HDAttachmentDis]  = QPixmap (":/hd_disabled_16px.png");
     mPool [CDAttachmentEn]   = QPixmap (":/cd_16px.png");
     mPool [CDAttachmentDis]  = QPixmap (":/cd_disabled_16px.png");
     mPool [FDAttachmentEn]   = QPixmap (":/fd_16px.png");
@@ -306,14 +306,24 @@ AbstractItem::~AbstractItem()
     if (mParent) mParent->delChild (this);
 }
 
-AbstractItem* AbstractItem::parent()
+AbstractItem* AbstractItem::parent() const
 {
     return mParent;
 }
 
-QUuid AbstractItem::id()
+QUuid AbstractItem::id() const
 {
     return mId;
+}
+
+QString AbstractItem::machineId() const
+{
+    return mMachineId;
+}
+
+void AbstractItem::setMachineId (const QString &aMchineId)
+{
+    mMachineId = aMchineId;
 }
 
 /* Root Item */
@@ -454,7 +464,12 @@ QString ControllerItem::text() const
 
 QString ControllerItem::tip() const
 {
-    return QString();
+    return VBoxVMSettingsHD::tr ("<nobr><b>%1</b></nobr><br>"
+                                 "<nobr>Bus:&nbsp;&nbsp;%2</nobr><br>"
+                                 "<nobr>Type:&nbsp;&nbsp;%3</nobr>")
+                                 .arg (mCtrName)
+                                 .arg (vboxGlobal().toString (mCtrType->busType()))
+                                 .arg (vboxGlobal().toString (mCtrType->ctrType()));
 }
 
 QPixmap ControllerItem::pixmap()
@@ -515,7 +530,7 @@ DeviceTypeList ControllerItem::ctrDeviceTypeList() const
      return mCtrType->deviceTypeList();
 }
 
-QStringList ControllerItem::ctrAllMediumIds() const
+QStringList ControllerItem::ctrAllMediumIds (bool aShowDiffs) const
 {
     QStringList allImages;
     for (VBoxMediaList::const_iterator it = vboxGlobal().currentMediaList().begin();
@@ -525,6 +540,12 @@ QStringList ControllerItem::ctrAllMediumIds() const
          {
              if ((*it).isNull() || typeToGlobal ((*it).type()) == deviceType)
              {
+                 /* We should filter out the base hard-disk of diff-disks,
+                  * as we want to insert here a diff-disks and want
+                  * to avoid duplicates in !aShowDiffs mode. */
+                 if (!aShowDiffs && (*it).parent() && !parent()->machineId().isNull() &&
+                     (*it).isAttachedInCurStateTo (parent()->machineId()))
+                     allImages.removeAll ((*it).root().id());
                  allImages << (*it).id();
                  break;
              }
@@ -683,7 +704,7 @@ QStringList AttachmentItem::attMediumIds (bool aFilter) const
     QStringList allMediumIds;
 
     /* Populate list of suitable medium ids */
-    foreach (QString mediumId, ctr->ctrAllMediumIds())
+    foreach (QString mediumId, ctr->ctrAllMediumIds (mAttIsShowDiffs))
     {
         VBoxMedium medium = vboxGlobal().findMedium (mediumId);
         if ((medium.isNull() && mAttDeviceType != KDeviceType_HardDisk) ||
@@ -733,7 +754,7 @@ void AttachmentItem::setAttMediumId (const QString &aAttMediumId)
     VBoxMedium medium;
 
     /* Caching first available medium */
-    if (aAttMediumId == firstAvailable && !attMediumIds (false).isEmpty())
+    if (aAttMediumId == firstAvailableId && !attMediumIds (false).isEmpty())
         medium = vboxGlobal().findMedium (attMediumIds (false) [0]);
     /* Caching passed medium */
     else if (!aAttMediumId.isEmpty())
@@ -793,8 +814,9 @@ void AttachmentItem::cache()
     mAttSize = medium.size (!mAttIsShowDiffs);
     mAttLogicalSize = medium.logicalSize (!mAttIsShowDiffs);
     mAttLocation = medium.location (!mAttIsShowDiffs);
-    mAttFormat = QString ("%1 (%2)").arg (medium.hardDiskType (!mAttIsShowDiffs))
-                                    .arg (medium.hardDiskFormat (!mAttIsShowDiffs));
+    mAttFormat = medium.isNull() ? QString ("--") :
+        QString ("%1 (%2)").arg (medium.hardDiskType (!mAttIsShowDiffs))
+                           .arg (medium.hardDiskFormat (!mAttIsShowDiffs));
     mAttUsage = medium.usage (!mAttIsShowDiffs);
 
     /* Fill empty attributes */
@@ -814,6 +836,7 @@ void AttachmentItem::delChild (AbstractItem* /* aItem */)
 StorageModel::StorageModel (QObject *aParent)
     : QAbstractItemModel (aParent)
     , mRootItem (new RootItem)
+    , mToolTipType (DefaultToolTip)
 {
 }
 
@@ -887,7 +910,32 @@ QVariant StorageModel::data (const QModelIndex &aIndex, int aRole) const
         case Qt::ToolTipRole:
         {
             if (AbstractItem *item = static_cast <AbstractItem*> (aIndex.internalPointer()))
+            {
+                if (item->rtti() == AbstractItem::Type_ControllerItem)
+                {
+                    QString tip (item->tip());
+                    switch (mToolTipType)
+                    {
+                        case ExpanderToolTip:
+                            if (aIndex.child (0, 0).isValid())
+                                tip = VBoxVMSettingsHD::tr ("<nobr>Expand/Collapse&nbsp;Item</nobr>");
+                            break;
+                        case HDAdderToolTip:
+                            tip = VBoxVMSettingsHD::tr ("<nobr>Add&nbsp;Hard&nbsp;Disk</nobr>");
+                            break;
+                        case CDAdderToolTip:
+                            tip = VBoxVMSettingsHD::tr ("<nobr>Add&nbsp;CD/DVD&nbsp;Device</nobr>");
+                            break;
+                        case FDAdderToolTip:
+                            tip = VBoxVMSettingsHD::tr ("<nobr>Add&nbsp;Floppy&nbsp;Device</nobr>");
+                            break;
+                        default:
+                            break;
+                    }
+                    return tip;
+                }
                 return item->tip();
+            }
             return QString();
         }
 
@@ -946,6 +994,10 @@ QVariant StorageModel::data (const QModelIndex &aIndex, int aRole) const
             return false;
         }
 
+        case R_ToolTipType:
+        {
+            return QVariant::fromValue (mToolTipType);
+        }
         case R_IsMoreControllersPossible:
         {
             return rowCount (root()) < 16;
@@ -1191,6 +1243,12 @@ bool StorageModel::setData (const QModelIndex &aIndex, const QVariant &aValue, i
 
     switch (aRole)
     {
+        case R_ToolTipType:
+        {
+            mToolTipType = aValue.value <ToolTipType>();
+            emit dataChanged (aIndex, aIndex);
+            return true;
+        }
         case R_CtrName:
         {
             if (AbstractItem *item = static_cast <AbstractItem*> (aIndex.internalPointer()))
@@ -1321,6 +1379,11 @@ void StorageModel::delAttachment (const QUuid &aCtrId, const QUuid &aAttId)
             endRemoveRows();
         }
     }
+}
+
+void StorageModel::setMachineId (const QString &aMachineId)
+{
+    mRootItem->setMachineId (aMachineId);
 }
 
 Qt::ItemFlags StorageModel::flags (const QModelIndex &aIndex) const
@@ -1496,6 +1559,7 @@ VBoxVMSettingsHD::VBoxVMSettingsHD()
     /* Storage Model/View */
     mStorageModel = new StorageModel (mTwStorageTree);
     StorageDelegate *storageDelegate = new StorageDelegate (mTwStorageTree);
+    mTwStorageTree->setMouseTracking (true);
     mTwStorageTree->setContextMenuPolicy (Qt::CustomContextMenu);
     mTwStorageTree->setModel (mStorageModel);
     mTwStorageTree->setItemDelegate (storageDelegate);
@@ -1509,8 +1573,15 @@ VBoxVMSettingsHD::VBoxVMSettingsHD()
     mTbStorageBar->addAction (mAddCtrAction);
     mTbStorageBar->addAction (mDelCtrAction);
 
+#ifdef Q_WS_MAC
+    /* We need a little more space for the focus rect. */
+    mLtStorage->setContentsMargins (3, 0, 3, 0);
+    mLtStorage->setSpacing (3);
+#endif /* Q_WS_MAC */
+
     /* Vdi Combo */
     mCbVdi->setNullItemPresent (true);
+    mCbVdi->refresh();
 
     /* Vmm Button */
     mTbVmm->setIcon (VBoxGlobal::iconSet (PixmapPool::pool()->pixmap (PixmapPool::VMMEn),
@@ -1525,6 +1596,12 @@ VBoxVMSettingsHD::VBoxVMSettingsHD()
     mLbUsageValue->setFullSizeSelection (true);
 
     /* Setup connections */
+    connect (&vboxGlobal(), SIGNAL (mediumEnumerated (const VBoxMedium &)),
+             this, SLOT (mediumUpdated (const VBoxMedium &)));
+    connect (&vboxGlobal(), SIGNAL (mediumUpdated (const VBoxMedium &)),
+             this, SLOT (mediumUpdated (const VBoxMedium &)));
+    connect (&vboxGlobal(), SIGNAL (mediumRemoved (VBoxDefs::MediumType, const QString &)),
+             this, SLOT (mediumRemoved (VBoxDefs::MediumType, const QString &)));
     connect (mAddCtrAction, SIGNAL (triggered (bool)), this, SLOT (addController()));
     connect (mAddIDECtrAction, SIGNAL (triggered (bool)), this, SLOT (addIDEController()));
     connect (mAddSATACtrAction, SIGNAL (triggered (bool)), this, SLOT (addSATAController()));
@@ -1543,6 +1620,8 @@ VBoxVMSettingsHD::VBoxVMSettingsHD()
              this, SLOT (onContextMenuRequested (const QPoint&)));
     connect (mTwStorageTree, SIGNAL (drawItemBranches (QPainter*, const QRect&, const QModelIndex&)),
              this, SLOT (onDrawItemBranches (QPainter *, const QRect &, const QModelIndex &)));
+    connect (mTwStorageTree, SIGNAL (mouseMoved (QMouseEvent*)),
+             this, SLOT (onMouseMoved (QMouseEvent*)));
     connect (mTwStorageTree, SIGNAL (mousePressed (QMouseEvent*)),
              this, SLOT (onMouseClicked (QMouseEvent*)));
     connect (mTwStorageTree, SIGNAL (mouseDoubleClicked (QMouseEvent*)),
@@ -1573,6 +1652,7 @@ void VBoxVMSettingsHD::getFrom (const CMachine &aMachine)
 
     /* Set the machine id for the media-combo */
     mCbVdi->setMachineId (mMachine.GetId());
+    mStorageModel->setMachineId (mMachine.GetId());
 
     /* Load currently present controllers & attachments */
     CStorageControllerVector controllers = mMachine.GetStorageControllers();
@@ -1636,12 +1716,39 @@ void VBoxVMSettingsHD::putBackTo()
 void VBoxVMSettingsHD::setValidator (QIWidgetValidator *aVal)
 {
     mValidator = aVal;
-    // TODO Setup Validation!
 }
 
 bool VBoxVMSettingsHD::revalidate (QString &aWarning, QString &)
 {
-    // TODO Perform Validation!
+    QModelIndex rootIndex = mStorageModel->root();
+    QMap <QString, QString> config;
+    for (int i = 0; i < mStorageModel->rowCount (rootIndex); ++ i)
+    {
+        QModelIndex ctrIndex = rootIndex.child (i, 0);
+        QString ctrName = mStorageModel->data (ctrIndex, StorageModel::R_CtrName).toString();
+        for (int j = 0; j < mStorageModel->rowCount (ctrIndex); ++ j)
+        {
+            QModelIndex attIndex = ctrIndex.child (j, 0);
+            StorageSlot attSlot = mStorageModel->data (attIndex, StorageModel::R_AttSlot).value <StorageSlot>();
+            KDeviceType attDevice = mStorageModel->data (attIndex, StorageModel::R_AttDevice).value <KDeviceType>();
+            QString key (mStorageModel->data (attIndex, StorageModel::R_AttMediumId).toString());
+            QString value (QString ("%1 (%2)").arg (ctrName, vboxGlobal().toFullString (attSlot)));
+            /* Check for emptiness */
+            if (vboxGlobal().findMedium (key).isNull() && attDevice == KDeviceType_HardDisk)
+            {
+                aWarning = tr ("No hard disk is selected for <i>%1</i>.").arg (value);
+                return aWarning.isNull();
+            }
+            /* Check for coincidence */
+            if (!vboxGlobal().findMedium (key).isNull() && config.contains (key))
+            {
+                aWarning = tr ("<i>%1</i> uses the medium that is already attached to <i>%2</i>.")
+                              .arg (value).arg (config [key]);
+                return aWarning.isNull();
+            }
+            else config.insert (key, value);
+        }
+    }
     return aWarning.isNull();
 }
 
@@ -1670,14 +1777,18 @@ void VBoxVMSettingsHD::retranslateUi()
                                      "currently selected controller as parent."));
     mDelAttAction->setWhatsThis (tr ("Removes attachment highlighted in Storage Tree."));
 
-    mAddCtrAction->setToolTip (mAddCtrAction->text().remove ('&') +
-        QString (" (%1)").arg (mAddCtrAction->shortcut().toString()));
-    mDelCtrAction->setToolTip (mDelCtrAction->text().remove ('&') +
-        QString (" (%1)").arg (mDelCtrAction->shortcut().toString()));
-    mAddAttAction->setToolTip (mAddAttAction->text().remove ('&') +
-        QString (" (%1)").arg (mAddAttAction->shortcut().toString()));
-    mDelAttAction->setToolTip (mDelAttAction->text().remove ('&') +
-        QString (" (%1)").arg (mDelAttAction->shortcut().toString()));
+    mAddCtrAction->setToolTip (QString ("<nobr>%1&nbsp;(%2)")
+                               .arg (mAddCtrAction->text().remove ('&'))
+                               .arg (mAddCtrAction->shortcut().toString()));
+    mDelCtrAction->setToolTip (QString ("<nobr>%1&nbsp;(%2)")
+                               .arg (mDelCtrAction->text().remove ('&'))
+                               .arg (mDelCtrAction->shortcut().toString()));
+    mAddAttAction->setToolTip (QString ("<nobr>%1&nbsp;(%2)")
+                               .arg (mAddAttAction->text().remove ('&'))
+                               .arg (mAddAttAction->shortcut().toString()));
+    mDelAttAction->setToolTip (QString ("<nobr>%1&nbsp;(%2)")
+                               .arg (mDelAttAction->text().remove ('&'))
+                               .arg (mDelAttAction->shortcut().toString()));
 }
 
 void VBoxVMSettingsHD::showEvent (QShowEvent *aEvent)
@@ -1708,6 +1819,44 @@ void VBoxVMSettingsHD::showEvent (QShowEvent *aEvent)
     VBoxSettingsPage::showEvent (aEvent);
 }
 
+void VBoxVMSettingsHD::mediumUpdated (const VBoxMedium &aMedium)
+{
+    QModelIndex rootIndex = mStorageModel->root();
+    for (int i = 0; i < mStorageModel->rowCount (rootIndex); ++ i)
+    {
+        QModelIndex ctrIndex = rootIndex.child (i, 0);
+        for (int j = 0; j < mStorageModel->rowCount (ctrIndex); ++ j)
+        {
+            QModelIndex attIndex = ctrIndex.child (j, 0);
+            QString attMediumId = mStorageModel->data (attIndex, StorageModel::R_AttMediumId).toString();
+            if (attMediumId == aMedium.id())
+            {
+                mStorageModel->setData (attIndex, attMediumId, StorageModel::R_AttMediumId);
+                mValidator->revalidate();
+            }
+        }
+    }
+}
+
+void VBoxVMSettingsHD::mediumRemoved (VBoxDefs::MediumType /* aType */, const QString &aMediumId)
+{
+    QModelIndex rootIndex = mStorageModel->root();
+    for (int i = 0; i < mStorageModel->rowCount (rootIndex); ++ i)
+    {
+        QModelIndex ctrIndex = rootIndex.child (i, 0);
+        for (int j = 0; j < mStorageModel->rowCount (ctrIndex); ++ j)
+        {
+            QModelIndex attIndex = ctrIndex.child (j, 0);
+            QString attMediumId = mStorageModel->data (attIndex, StorageModel::R_AttMediumId).toString();
+            if (attMediumId == aMediumId)
+            {
+                mStorageModel->setData (attIndex, firstAvailableId, StorageModel::R_AttMediumId);
+                mValidator->revalidate();
+            }
+        }
+    }
+}
+
 void VBoxVMSettingsHD::addController()
 {
     QMenu menu;
@@ -1720,26 +1869,30 @@ void VBoxVMSettingsHD::addController()
 
 void VBoxVMSettingsHD::addIDEController()
 {
-    // TODO Generate Unique Name!
-    mStorageModel->addController (tr ("IDE Controller"), KStorageBus_IDE, KStorageControllerType_PIIX3);
+    mStorageModel->addController (generateUniqueName (tr ("IDE Controller")),
+                                  KStorageBus_IDE, KStorageControllerType_PIIX4);
+    emit storageChanged();
 }
 
 void VBoxVMSettingsHD::addSATAController()
 {
-    // TODO Generate Unique Name!
-    mStorageModel->addController (tr ("SATA Controller"), KStorageBus_SATA, KStorageControllerType_IntelAhci);
+    mStorageModel->addController (generateUniqueName (tr ("SATA Controller")),
+                                  KStorageBus_SATA, KStorageControllerType_IntelAhci);
+    emit storageChanged();
 }
 
 void VBoxVMSettingsHD::addSCSIController()
 {
-    // TODO Generate Unique Name!
-    mStorageModel->addController (tr ("SCSI Controller"), KStorageBus_SCSI, KStorageControllerType_LsiLogic);
+    mStorageModel->addController (generateUniqueName (tr ("SCSI Controller")),
+                                  KStorageBus_SCSI, KStorageControllerType_LsiLogic);
+    emit storageChanged();
 }
 
 void VBoxVMSettingsHD::addFloppyController()
 {
-    // TODO Generate Unique Name!
-    mStorageModel->addController (tr ("Floppy Controller"), KStorageBus_Floppy, KStorageControllerType_I82078);
+    mStorageModel->addController (generateUniqueName (tr ("Floppy Controller")),
+                                  KStorageBus_Floppy, KStorageControllerType_I82078);
+    emit storageChanged();
 }
 
 void VBoxVMSettingsHD::delController()
@@ -1748,6 +1901,8 @@ void VBoxVMSettingsHD::delController()
     if (!mStorageModel->data (index, StorageModel::R_IsController).toBool()) return;
 
     mStorageModel->delController (QUuid (mStorageModel->data (index, StorageModel::R_ItemId).toString()));
+    emit storageChanged();
+    mValidator->revalidate();
 }
 
 void VBoxVMSettingsHD::addAttachment (KDeviceType aDeviceType)
@@ -1759,6 +1914,8 @@ void VBoxVMSettingsHD::addAttachment (KDeviceType aDeviceType)
         aDeviceType = mStorageModel->data (index, StorageModel::R_CtrDevices).value <DeviceTypeList>() [0];
 
     mStorageModel->addAttachment (QUuid (mStorageModel->data (index, StorageModel::R_ItemId).toString()), aDeviceType);
+    emit storageChanged();
+    mValidator->revalidate();
 }
 
 void VBoxVMSettingsHD::delAttachment()
@@ -1772,6 +1929,8 @@ void VBoxVMSettingsHD::delAttachment()
 
     mStorageModel->delAttachment (QUuid (mStorageModel->data (parent, StorageModel::R_ItemId).toString()),
                                   QUuid (mStorageModel->data (index, StorageModel::R_ItemId).toString()));
+    emit storageChanged();
+    mValidator->revalidate();
 }
 
 void VBoxVMSettingsHD::getInformation()
@@ -1861,6 +2020,8 @@ void VBoxVMSettingsHD::getInformation()
         }
     }
 
+    mValidator->revalidate();
+
     mIsLoadingInProgress = false;
 }
 
@@ -1914,6 +2075,7 @@ void VBoxVMSettingsHD::setInformation()
             break;
     }
 
+    emit storageChanged();
     getInformation();
 }
 
@@ -1967,7 +2129,7 @@ void VBoxVMSettingsHD::onRowInserted (const QModelIndex &aParent, int aPosition)
                 QString mediumId = askResult == QIMessageBox::Yes ? getWithNewHDWizard() :
                                    askResult == QIMessageBox::No ? getWithMediaManager (typeToLocal (deviceType)) : QString();
                 if (mediumId.isNull())
-                    mediumId = firstAvailable;
+                    mediumId = firstAvailableId;
                 mStorageModel->setData (index, mediumId, StorageModel::R_AttMediumId);
             }
             break;
@@ -2042,12 +2204,99 @@ void VBoxVMSettingsHD::onDrawItemBranches (QPainter *aPainter, const QRect &aRec
     aPainter->restore();
 }
 
+void VBoxVMSettingsHD::onMouseMoved (QMouseEvent *aEvent)
+{
+    QModelIndex index = mTwStorageTree->indexAt (aEvent->pos());
+    QRect indexRect = mTwStorageTree->visualRect (index);
+
+    /* Expander tool-tip */
+    if (mStorageModel->data (index, StorageModel::R_IsController).toBool())
+    {
+        QRect expanderRect = mStorageModel->data (index, StorageModel::R_ItemPixmapRect).toRect();
+        expanderRect.translate (indexRect.x(), indexRect.y());
+        if (expanderRect.contains (aEvent->pos()))
+        {
+            aEvent->setAccepted (true);
+            if (mStorageModel->data (index, StorageModel::R_ToolTipType).value <StorageModel::ToolTipType>() != StorageModel::ExpanderToolTip)
+                mStorageModel->setData (index, QVariant::fromValue (StorageModel::ExpanderToolTip), StorageModel::R_ToolTipType);
+            return;
+        }
+    }
+
+    /* Adder tool-tip */
+    if (mStorageModel->data (index, StorageModel::R_IsController).toBool() &&
+        mTwStorageTree->currentIndex() == index)
+    {
+        DeviceTypeList devicesList (mStorageModel->data (index, StorageModel::R_CtrDevices).value <DeviceTypeList>());
+        for (int i = 0; i < devicesList.size(); ++ i)
+        {
+            KDeviceType deviceType = devicesList [i];
+
+            QRect deviceRect;
+            switch (deviceType)
+            {
+                case KDeviceType_HardDisk:
+                {
+                    deviceRect = mStorageModel->data (index, StorageModel::R_HDPixmapRect).toRect();
+                    break;
+                }
+                case KDeviceType_DVD:
+                {
+                    deviceRect = mStorageModel->data (index, StorageModel::R_CDPixmapRect).toRect();
+                    break;
+                }
+                case KDeviceType_Floppy:
+                {
+                    deviceRect = mStorageModel->data (index, StorageModel::R_FDPixmapRect).toRect();
+                    break;
+                }
+                default:
+                    break;
+            }
+            deviceRect.translate (indexRect.x() + indexRect.width(), indexRect.y());
+
+            if (deviceRect.contains (aEvent->pos()))
+            {
+                aEvent->setAccepted (true);
+                switch (deviceType)
+                {
+                    case KDeviceType_HardDisk:
+                    {
+                        if (mStorageModel->data (index, StorageModel::R_ToolTipType).value <StorageModel::ToolTipType>() != StorageModel::HDAdderToolTip)
+                            mStorageModel->setData (index, QVariant::fromValue (StorageModel::HDAdderToolTip), StorageModel::R_ToolTipType);
+                        break;
+                    }
+                    case KDeviceType_DVD:
+                    {
+                        if (mStorageModel->data (index, StorageModel::R_ToolTipType).value <StorageModel::ToolTipType>() != StorageModel::CDAdderToolTip)
+                            mStorageModel->setData (index, QVariant::fromValue (StorageModel::CDAdderToolTip), StorageModel::R_ToolTipType);
+                        break;
+                    }
+                    case KDeviceType_Floppy:
+                    {
+                        if (mStorageModel->data (index, StorageModel::R_ToolTipType).value <StorageModel::ToolTipType>() != StorageModel::FDAdderToolTip)
+                            mStorageModel->setData (index, QVariant::fromValue (StorageModel::FDAdderToolTip), StorageModel::R_ToolTipType);
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                return;
+            }
+        }
+    }
+
+    /* Default tool-tip */
+    if (mStorageModel->data (index, StorageModel::R_ToolTipType).value <StorageModel::ToolTipType>() != StorageModel::DefaultToolTip)
+        mStorageModel->setData (index, StorageModel::DefaultToolTip, StorageModel::R_ToolTipType);
+}
+
 void VBoxVMSettingsHD::onMouseClicked (QMouseEvent *aEvent)
 {
     QModelIndex index = mTwStorageTree->indexAt (aEvent->pos());
     QRect indexRect = mTwStorageTree->visualRect (index);
 
-    /* Process expander icon */
+    /* Expander icon */
     if (mStorageModel->data (index, StorageModel::R_IsController).toBool())
     {
         QRect expanderRect = mStorageModel->data (index, StorageModel::R_ItemPixmapRect).toRect();
@@ -2060,7 +2309,7 @@ void VBoxVMSettingsHD::onMouseClicked (QMouseEvent *aEvent)
         }
     }
 
-    /* Process add-attachment icons */
+    /* Adder icons */
     if (mStorageModel->data (index, StorageModel::R_IsController).toBool() &&
         mTwStorageTree->currentIndex() == index)
     {
@@ -2141,5 +2390,25 @@ void VBoxVMSettingsHD::updateAdditionalObjects (KDeviceType aType)
 
     mLbHDFormat->setVisible (aType == KDeviceType_HardDisk);
     mLbHDFormatValue->setVisible (aType == KDeviceType_HardDisk);
+}
+
+QString VBoxVMSettingsHD::generateUniqueName (const QString &aTemplate) const
+{
+    int maxNumber = 0;
+    QModelIndex rootIndex = mStorageModel->root();
+    for (int i = 0; i < mStorageModel->rowCount (rootIndex); ++ i)
+    {
+        QModelIndex ctrIndex = rootIndex.child (i, 0);
+        QString ctrName = mStorageModel->data (ctrIndex, StorageModel::R_CtrName).toString();
+        if (ctrName.startsWith (aTemplate))
+        {
+            QString stringNumber (ctrName.right (ctrName.size() - aTemplate.size()));
+            bool isConverted = false;
+            int number = stringNumber.toInt (&isConverted);
+            if (isConverted && number > maxNumber)
+                maxNumber = number;
+        }
+    }
+    return QString ("%1 %2").arg (aTemplate).arg (++ maxNumber);
 }
 

@@ -271,8 +271,8 @@ VBoxVMSettingsDlg::VBoxVMSettingsDlg (QWidget *aParent,
         prefPage = new VBoxVMSettingsHD();
         connect (prefPage, SIGNAL (storageChanged()), this, SLOT (resetFirstRunFlag()));
         addItem (":/hd_32px.png", ":/hd_disabled_32px.png",
-                 ":/hd_16px.png", ":/hd_disabled_16px.png",
-                 StorageId, "#storage", prefPage, StorageId);
+                 ":/attachment_16px.png", ":/attachment_disabled_16px.png",
+                 StorageId, "#storage", prefPage);
     }
 
     /* Audio page */
