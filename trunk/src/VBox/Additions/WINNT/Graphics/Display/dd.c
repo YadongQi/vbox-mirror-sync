@@ -674,6 +674,11 @@ DWORD APIENTRY DdCreateSurface(PDD_CREATESURFACEDATA  lpCreateSurface)
                 	uint32_t surfSizeX = pBody->SurfInfo.sizeX;
                 	uint32_t surfSizeY = pBody->SurfInfo.sizeY;
                     pDesc->hHostHandle = pBody->SurfInfo.hSurf;
+                    if(!!(lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_OVERLAY)
+                    		&& !!(lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_VISIBLE))
+                    {
+                    	pDesc->bVisible = true;
+                    }
                     lpSurfaceGlobal->dwReserved1 = (ULONG_PTR)pDesc;
                     lPitch = pBody->SurfInfo.pitch;
 //                    lBpp = pBody->SurfInfo.bitsPerPixel;
@@ -1181,15 +1186,9 @@ DWORD APIENTRY DdUnlock(PDD_UNLOCKDATA lpUnlock)
 //        vboxVHWACommandCheckHostCmds(pDev);
 
         if(lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_VISIBLE
-                || (
-                        !(lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_COMPLEX)
-                        && (
-                                lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE
-                                || (
-                                        (lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_OVERLAY)
-                                        && !pDesc->bHidden
-                                    )
-                           )
+                || lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE
+                || (    !!(lpSurfaceLocal->ddsCaps.dwCaps & DDSCAPS_OVERLAY)
+                     && pDesc->bVisible
                    )
           )
         {
@@ -1582,6 +1581,9 @@ DWORD APIENTRY DdFlip(PDD_FLIPDATA  lpFlip)
         pBody->TargGuestSurfInfo = (uint64_t)pTargDesc;
         pBody->CurrGuestSurfInfo = (uint64_t)pCurrDesc;
 
+        pTargDesc->bVisible = pCurrDesc->bVisible;
+        pCurrDesc->bVisible = false;
+
 //        pBody->u.in.flags = vboxVHWAFromDDFLIPs(lpFlip->dwFlags);
 
         ASMAtomicIncU32(&pCurrDesc->cPendingFlipsCurr);
@@ -1723,7 +1725,7 @@ DWORD APIENTRY DdSetOverlayPosition(PDD_SETOVERLAYPOSITIONDATA  lpSetOverlayPosi
 
     DISPDBG((0, "%s\n", __FUNCTION__));
 
-    if(pSrcDesc->bHidden)
+    if(!pSrcDesc->bVisible)
     {
         lpSetOverlayPosition->ddRVal = DDERR_GENERIC;
         return DDHAL_DRIVER_HANDLED;
@@ -1764,7 +1766,7 @@ DWORD APIENTRY DdUpdateOverlay(PDD_UPDATEOVERLAYDATA  lpUpdateOverlay)
 
     DISPDBG((0, "%s\n", __FUNCTION__));
 
-//    if(pSrcDesc->bHidden)
+//    if(!pSrcDesc->bVisible)
 //    {
 //        lpUpdateOverlay->ddRVal = DDERR_GENERIC;
 //        return DDHAL_DRIVER_HANDLED;
@@ -1790,11 +1792,11 @@ DWORD APIENTRY DdUpdateOverlay(PDD_UPDATEOVERLAYDATA  lpUpdateOverlay)
 
         if(lpUpdateOverlay->dwFlags & DDOVER_HIDE)
         {
-            pSrcDesc->bHidden = true;
+            pSrcDesc->bVisible = false;
         }
         else if(lpUpdateOverlay->dwFlags & DDOVER_SHOW)
         {
-            pSrcDesc->bHidden = false;
+            pSrcDesc->bVisible = true;
             if(pSrcDesc->UpdatedMemRegion.bValid)
             {
                 pBody->u.in.xUpdatedSrcMemValid = 1;

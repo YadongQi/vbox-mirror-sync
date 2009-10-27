@@ -88,6 +88,8 @@ typedef struct DRVSCSI
     PPDMTHREAD              pAsyncIOThread;
     /** Queue for passing the requests to the thread. */
     PRTREQQUEUE             pQueueRequests;
+    /** Request that we've left pending on wakeup or reset. */
+    PRTREQ                  pPendingDummyReq;
     /** Release statistics: number of bytes written. */
     STAMCOUNTER             StatBytesWritten;
     /** Release statistics: number of bytes read. */
@@ -670,6 +672,17 @@ static int drvscsiProcessRequestOne(PDRVSCSI pThis, PPDMSCSIREQUEST pRequest)
 }
 
 /**
+ * Dummy request function used by drvscsiReset to wait for all pending requests
+ * to complete prior to the device reset.
+ *
+ * @returns VINF_SUCCESS.
+ */
+static int drvscsiAsyncIOLoopSyncCallback(void)
+{
+    return VINF_SUCCESS;
+}
+
+/**
  * Request function to wakeup the thread.
  *
  * @returns VWRN_STATE_CHANGED.
@@ -705,16 +718,48 @@ static int drvscsiAsyncIOLoop(PPDMDRVINS pDrvIns, PPDMTHREAD pThread)
     return VINF_SUCCESS;
 }
 
+/**
+ * Deals with any pending dummy request
+ *
+ * @returns true if no pending dummy request, false if still pending.
+ * @param   pThis               The instance data.
+ * @param   cMillies            The number of milliseconds to wait for any
+ *                              pending request to finish.
+ */
+static bool drvscsiAsyncIOLoopNoPendingDummy(PDRVSCSI pThis, uint32_t cMillies)
+{
+    if (!pThis->pPendingDummyReq)
+        return false;
+    int rc = RTReqWait(pThis->pPendingDummyReq, cMillies);
+    if (RT_FAILURE(rc))
+        return false;
+    RTReqFree(pThis->pPendingDummyReq);
+    pThis->pPendingDummyReq = NULL;
+    return true;
+}
+
 static int drvscsiAsyncIOLoopWakeup(PPDMDRVINS pDrvIns, PPDMTHREAD pThread)
 {
-    int rc;
     PDRVSCSI pThis = PDMINS_2_DATA(pDrvIns, PDRVSCSI);
     PRTREQ pReq;
+    int rc;
 
     AssertMsgReturn(pThis->pQueueRequests, ("pQueueRequests is NULL\n"), VERR_INVALID_STATE);
 
+    if (!drvscsiAsyncIOLoopNoPendingDummy(pThis, 10000 /* 10 sec */))
+    {
+        LogRel(("drvscsiAsyncIOLoopWakeup#%u: previous dummy request is still pending\n", pDrvIns->iInstance));
+        return VERR_TIMEOUT;
+    }
+
     rc = RTReqCall(pThis->pQueueRequests, &pReq, 10000 /* 10 sec. */, (PFNRT)drvscsiAsyncIOLoopWakeupFunc, 0);
-    AssertMsgRC(rc, ("Inserting request into queue failed rc=%Rrc\n", rc));
+    if (RT_SUCCESS(rc))
+        RTReqFree(pReq);
+    else
+    {
+        pThis->pPendingDummyReq = pReq;
+        LogRel(("drvscsiAsyncIOLoopWakeup#%u: %Rrc pReq=%p\n", pDrvIns->iInstance, rc, pReq));
+    }
 
     return rc;
 }
@@ -757,6 +802,80 @@ static DECLCALLBACK(void *)  drvscsiQueryInterface(PPDMIBASE pInterface, PDMINTE
 }
 
 /**
+ * Worker for drvscsiReset, drvscsiSuspend and drvscsiPowerOff.
+ *
+ * @param   pThis               The instance data.
+ * @param   pszEvent            The notification event (for logging).
+ */
+static void drvscsiWaitForPendingRequests(PDRVSCSI pThis, const char *pszEvent)
+{
+    /*
+     * Try make sure any pending I/O has completed now.
+     */
+    if (pThis->pQueueRequests)
+    {
+        if (!drvscsiAsyncIOLoopNoPendingDummy(pThis, 20000 /*ms*/))
+        {
+            LogRel(("drvscsi%s#%u: previous dummy request is still pending\n", pszEvent, pThis->pDrvIns->iInstance));
+            return;
+        }
+
+        if (RTReqIsBusy(pThis->pQueueRequests))
+        {
+            PRTREQ pReq;
+            int rc = RTReqCall(pThis->pQueueRequests, &pReq, 20000 /*ms*/, (PFNRT)drvscsiAsyncIOLoopSyncCallback, 0);
+            if (RT_SUCCESS(rc))
+                RTReqFree(pReq);
+            else
+            {
+                pThis->pPendingDummyReq = pReq;
+                LogRel(("drvscsi%s#%u: %Rrc pReq=%p\n", pszEvent, pThis->pDrvIns->iInstance, rc, pReq));
+            }
+        }
+    }
+/** @todo r=bird: this is a deadlock trap. We're EMT(0), if there are
+ *        outstanding requests they may require EMT interaction because of
+ *        physical write backs around lsilogicDeviceSCSIRequestCompleted...
+ *
+ *        I have some more generic solution for delayed suspend, reset and
+ *        poweroff handling that I'm considering.  The idea is that the
+ *        notification callback returns a status indicating that it didn't
+ *        complete and needs to be called again or something.  EMT continues on
+ *        the next device and when it's done, it processes incoming requests and
+ *        does another notification round... This way we could combine the waits
+ *        in the I/O controllers and reduce the time it takes to suspend a VM a
+ *        wee bit...
+ */
+}
+
+/**
+ * @copydoc FNPDMDRVPOWEROFF
+ */
+static DECLCALLBACK(void) drvscsiPowerOff(PPDMDRVINS pDrvIns)
+{
+    PDRVSCSI pThis = PDMINS_2_DATA(pDrvIns, PDRVSCSI);
+    drvscsiWaitForPendingRequests(pThis, "PowerOff");
+}
+
+/**
+ * @copydoc FNPDMDRVSUSPEND
+ */
+static DECLCALLBACK(void) drvscsiSuspend(PPDMDRVINS pDrvIns)
+{
+    PDRVSCSI pThis = PDMINS_2_DATA(pDrvIns, PDRVSCSI);
+    drvscsiWaitForPendingRequests(pThis, "Suspend");
+}
+
+/**
+ * @copydoc FNPDMDRVRESET
+ */
+static DECLCALLBACK(void) drvscsiReset(PPDMDRVINS pDrvIns)
+{
+    PDRVSCSI pThis = PDMINS_2_DATA(pDrvIns, PDRVSCSI);
+    drvscsiWaitForPendingRequests(pThis, "Reset");
+}
+
+/**
  * Destruct a driver instance.
  *
  * Most VM resources are freed by the VM. This callback is provided so that any non-VM
@@ -771,6 +890,9 @@ static DECLCALLBACK(void) drvscsiDestruct(PPDMDRVINS pDrvIns)
 
     if (pThis->pQueueRequests)
     {
+        if (!drvscsiAsyncIOLoopNoPendingDummy(pThis, 100 /*ms*/))
+            LogRel(("drvscsiDestruct#%u: previous dummy request is still pending\n", pDrvIns->iInstance));
+
         rc = RTReqDestroyQueue(pThis->pQueueRequests);
         AssertMsgRC(rc, ("Failed to destroy queue rc=%Rrc\n", rc));
     }
@@ -895,17 +1017,17 @@ const PDMDRVREG g_DrvSCSI =
     /* pfnPowerOn */
     NULL,
     /* pfnReset */
-    NULL,
+    drvscsiReset,
     /* pfnSuspend */
-    NULL,
+    drvscsiSuspend,
     /* pfnResume */
     NULL,
     /* pfnAttach */
     NULL,
     /* pfnDetach */
-    NULL, 
+    NULL,
     /* pfnPowerOff */
-    NULL, 
+    drvscsiPowerOff,
     /* pfnSoftReset */
     NULL,
     /* u32EndVersion */

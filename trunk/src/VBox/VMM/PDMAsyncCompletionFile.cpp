@@ -666,15 +666,16 @@ static int pdmacFileEpInitialize(PPDMASYNCCOMPLETIONENDPOINT pEndpoint,
                         }
                     }
 
-                    /* Check for an idling one or create new if not found */
-                    if (!pEpClassFile->pAioMgrHead)
+                    pAioMgr = pEpClassFile->pAioMgrHead;
+
+                    /* Check for an idling not failsafe one or create new if not found */
+                    while (pAioMgr && pAioMgr->fFailsafe)
+                        pAioMgr = pAioMgr->pNext;
+
+                    if (!pAioMgr)
                     {
                         rc = pdmacFileAioMgrCreate(pEpClassFile, &pAioMgr, false);
                         AssertRC(rc);
-                    }
-                    else
-                    {
-                        pAioMgr = pEpClassFile->pAioMgrHead;
                     }
                 }
 
@@ -723,6 +724,8 @@ static int pdmacFileEpClose(PPDMASYNCCOMPLETIONENDPOINT pEndpoint)
     /* Free the cached data. */
     if (pEpFile->fCaching)
         pdmacFileEpCacheDestroy(pEpFile);
+
+    RTFileClose(pEpFile->File);
 
     return VINF_SUCCESS;
 }

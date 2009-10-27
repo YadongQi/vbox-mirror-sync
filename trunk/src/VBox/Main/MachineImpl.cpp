@@ -2565,7 +2565,7 @@ STDMETHODIMP Machine::PassthroughDevice(IN_BSTR aControllerName, LONG aControlle
         return setError(E_INVALIDARG,
                         tr("Setting passthrough rejected as the device attached to device slot %d on port %d of controller '%ls' is not a DVD"),
                         aDevice, aControllerPort, aControllerName);
-    pAttach->updatePassthrough(aPassthrough);
+    pAttach->updatePassthrough(!!aPassthrough);
 
     return S_OK;
 }
@@ -3362,9 +3362,9 @@ STDMETHODIMP Machine::SetGuestProperty(IN_BSTR aName,
             if (!directControl)
                 rc = E_FAIL;
             else
-                rc = directControl->AccessGuestProperty(aName, aValue, aFlags,
-                                                        true /* isSetter */,
-                                                        &dummy, &dummy64, &dummy);
+                rc = directControl->AccessGuestProperty
+                             (aName, *aValue ? aValue : NULL, aFlags,
+                              true /* isSetter */, &dummy, &dummy64, &dummy);
         }
     }
     catch (std::bad_alloc &)
@@ -3763,6 +3763,19 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
 
     LogFlowThisFunc(("mSession.mState=%s\n", Global::stringifySessionState(mData->mSession.mState)));
 
+    /* Hack: in case the session is closing and there is a progress object
+     * which allows waiting for the session to be closed, take the opportunity
+     * and do a limited wait (max. 1 second). This helps a lot when the system
+     * is busy and thus session closing can take a little while. */
+    if (    mData->mSession.mState == SessionState_Closing
+        &&  mData->mSession.mProgress)
+    {
+        alock.leave();
+        mData->mSession.mProgress->WaitForCompletion(1000);
+        alock.enter();
+        LogFlowThisFunc(("after waiting: mSession.mState=%s\n", Global::stringifySessionState(mData->mSession.mState)));
+    }
+
     if (mData->mSession.mState == SessionState_Open ||
         mData->mSession.mState == SessionState_Closing)
         return setError(VBOX_E_INVALID_OBJECT_STATE,
@@ -3770,13 +3783,13 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
                         mUserData->mName.raw());
 
     /* may not be busy */
-    AssertReturn(!Global::IsOnlineOrTransient (mData->mMachineState), E_FAIL);
+    AssertReturn(!Global::IsOnlineOrTransient(mData->mMachineState), E_FAIL);
 
     /* get the session PID */
     RTPROCESS pid = NIL_RTPROCESS;
-    AssertCompile (sizeof (ULONG) == sizeof (RTPROCESS));
-    aControl->GetPID ((ULONG *) &pid);
-    Assert (pid != NIL_RTPROCESS);
+    AssertCompile(sizeof(ULONG) == sizeof(RTPROCESS));
+    aControl->GetPID((ULONG *) &pid);
+    Assert(pid != NIL_RTPROCESS);
 
     if (mData->mSession.mState == SessionState_Spawning)
     {
@@ -3799,8 +3812,8 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
     /* create a SessionMachine object */
     ComObjPtr<SessionMachine> sessionMachine;
     sessionMachine.createObject();
-    HRESULT rc = sessionMachine->init (this);
-    AssertComRC (rc);
+    HRESULT rc = sessionMachine->init(this);
+    AssertComRC(rc);
 
     /* NOTE: doing return from this function after this point but
      * before the end is forbidden since it may call SessionMachine::uninit()
@@ -3811,7 +3824,7 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
     if (SUCCEEDED(rc))
     {
 #ifdef VBOX_WITH_RESOURCE_USAGE_API
-        registerMetrics (mParent->performanceCollector(), this, pid);
+        registerMetrics(mParent->performanceCollector(), this, pid);
 #endif /* VBOX_WITH_RESOURCE_USAGE_API */
 
         /*
@@ -3835,13 +3848,13 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
         alock.leave();
 
         LogFlowThisFunc(("Calling AssignMachine()...\n"));
-        rc = aControl->AssignMachine (sessionMachine);
+        rc = aControl->AssignMachine(sessionMachine);
         LogFlowThisFunc(("AssignMachine() returned %08X\n", rc));
 
         /* The failure may occur w/o any error info (from RPC), so provide one */
-        if (FAILED (rc))
-            setError (VBOX_E_VM_ERROR,
-                tr ("Failed to assign the machine to the session (%Rrc)"), rc);
+        if (FAILED(rc))
+            setError(VBOX_E_VM_ERROR,
+                tr("Failed to assign the machine to the session (%Rrc)"), rc);
 
         if (SUCCEEDED(rc) && origState == SessionState_Spawning)
         {
@@ -3849,12 +3862,12 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
 
             /* get the console from the direct session */
             ComPtr<IConsole> console;
-            rc = aControl->GetRemoteConsole (console.asOutParam());
-            ComAssertComRC (rc);
+            rc = aControl->GetRemoteConsole(console.asOutParam());
+            ComAssertComRC(rc);
 
             if (SUCCEEDED(rc) && !console)
             {
-                ComAssert (!!console);
+                ComAssert(!!console);
                 rc = E_FAIL;
             }
 
@@ -3867,7 +3880,7 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
                  */
                 LogFlowThisFunc(("Calling AssignRemoteMachine()...\n"));
                 rc = mData->mSession.mRemoteControls.front()->
-                    AssignRemoteMachine (sessionMachine, console);
+                    AssignRemoteMachine(sessionMachine, console);
                 LogFlowThisFunc(("AssignRemoteMachine() returned %08X\n", rc));
 
                 /* The failure may occur w/o any error info (from RPC), so provide one */
@@ -3931,13 +3944,13 @@ HRESULT Machine::openSession(IInternalSessionControl *aControl)
          * identity checks (it will be internally cached within mDirectControl
          * at least on XPCOM) */
         ComPtr<IUnknown> unk = mData->mSession.mDirectControl;
-        NOREF (unk);
+        NOREF(unk);
     }
 
     if (mData->mSession.mProgress)
     {
         /* finalize the progress after setting the state, for consistency */
-        mData->mSession.mProgress->notifyComplete (rc);
+        mData->mSession.mProgress->notifyComplete(rc);
         mData->mSession.mProgress.setNull();
     }
 
@@ -4401,23 +4414,23 @@ bool Machine::checkForSpawnFailure()
     if (!autoCaller.isOk())
     {
         /* nothing to do */
-        LogFlowThisFunc(("Already uninitialized!"));
+        LogFlowThisFunc(("Already uninitialized!\n"));
         return true;
     }
 
     /* VirtualBox::addProcessToReap() needs a write lock */
-    AutoMultiWriteLock2 alock (mParent, this);
+    AutoMultiWriteLock2 alock(mParent, this);
 
     if (mData->mSession.mState != SessionState_Spawning)
     {
         /* nothing to do */
-        LogFlowThisFunc(("Not spawning any more!"));
+        LogFlowThisFunc(("Not spawning any more!\n"));
         return true;
     }
 
     HRESULT rc = S_OK;
 
-#if defined (RT_OS_WINDOWS) || defined (RT_OS_OS2)
+#if defined(RT_OS_WINDOWS) || defined(RT_OS_OS2)
 
     /* the process was already unexpectedly terminated, we just need to set an
      * error and finalize session spawning */
@@ -4426,9 +4439,13 @@ bool Machine::checkForSpawnFailure()
                   name().raw());
 #else
 
+    /* PID not yet initialized, skip check. */
+    if (mData->mSession.mPid == NIL_RTPROCESS)
+        return false;
+
     RTPROCSTATUS status;
-    int vrc = ::RTProcWait (mData->mSession.mPid, RTPROCWAIT_FLAGS_NOBLOCK,
-                            &status);
+    int vrc = ::RTProcWait(mData->mSession.mPid, RTPROCWAIT_FLAGS_NOBLOCK,
+                           &status);
 
     if (vrc != VERR_PROCESS_RUNNING)
         rc = setError(E_FAIL,
@@ -4442,7 +4459,7 @@ bool Machine::checkForSpawnFailure()
          * and reset session state to Closed (@note keep the code in sync with
          * the relevant part in checkForSpawnFailure()). */
 
-        Assert (mData->mSession.mRemoteControls.size() == 1);
+        Assert(mData->mSession.mRemoteControls.size() == 1);
         if (mData->mSession.mRemoteControls.size() == 1)
         {
             ErrorInfoKeeper eik;
@@ -4453,13 +4470,16 @@ bool Machine::checkForSpawnFailure()
         mData->mSession.mState = SessionState_Closed;
 
         /* finalize the progress after setting the state, for consistency */
-        mData->mSession.mProgress->notifyComplete (rc);
-        mData->mSession.mProgress.setNull();
+        if (!mData->mSession.mProgress.isNull())
+        {
+            mData->mSession.mProgress->notifyComplete(rc);
+            mData->mSession.mProgress.setNull();
+        }
 
-        mParent->addProcessToReap (mData->mSession.mPid);
+        mParent->addProcessToReap(mData->mSession.mPid);
         mData->mSession.mPid = NIL_RTPROCESS;
 
-        mParent->onSessionStateChange (mData->mUuid, SessionState_Closed);
+        mParent->onSessionStateChange(mData->mUuid, SessionState_Closed);
         return true;
     }
 
@@ -8067,7 +8087,7 @@ void SessionMachine::uninit (Uninit::Reason aReason)
     mData->mSession.mState = SessionState_Closed;
     mData->mSession.mType.setNull();
 
-    /* close the interprocess semaphore before leaving the shared lock */
+    /* close the interprocess semaphore before leaving the exclusive lock */
 #if defined(RT_OS_WINDOWS)
     if (mIPCSem)
         ::CloseHandle (mIPCSem);
@@ -8095,7 +8115,7 @@ void SessionMachine::uninit (Uninit::Reason aReason)
     /* free the essential data structure last */
     mData.free();
 
-    /* leave the shared lock before setting the below two to NULL */
+    /* leave the exclusive lock before setting the below two to NULL */
     alock.leave();
 
     unconst(mParent).setNull();
@@ -8314,7 +8334,7 @@ STDMETHODIMP SessionMachine::OnSessionEnd (ISession *aSession,
 
     AutoCaller autoCaller(this);
 
-    LogFlowThisFunc(("state=%d\n", autoCaller.state()));
+    LogFlowThisFunc(("callerstate=%d\n", autoCaller.state()));
     /*
      *  We don't assert below because it might happen that a non-direct session
      *  informs us it is closed right after we've been uninitialized -- it's ok.
@@ -9041,7 +9061,7 @@ bool SessionMachine::checkForDeath()
         {
             /* return true if not ready, to cause the client watcher to exclude
              * the corresponding session from watching */
-            LogFlowThisFunc(("Already uninitialized!"));
+            LogFlowThisFunc(("Already uninitialized!\n"));
             return true;
         }
 

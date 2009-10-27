@@ -533,6 +533,8 @@ int main()
     GEN_CHECK_OFF(PITState, channels[1]);
     GEN_CHECK_OFF(PITState, speaker_data_on);
 //    GEN_CHECK_OFF(PITState, dummy_refresh_clock);
+    GEN_CHECK_OFF(PITState, IOPortBaseCfg);
+    GEN_CHECK_OFF(PITState, fSpeakerCfg);
     GEN_CHECK_OFF(PITState, pDevIns);
     GEN_CHECK_OFF(PITState, StatPITIrq);
     GEN_CHECK_OFF(PITState, StatPITHandler);
@@ -552,6 +554,8 @@ int main()
     GEN_CHECK_OFF(RTCState, current_tm.tm_wday);
     GEN_CHECK_OFF(RTCState, current_tm.tm_yday);
     GEN_CHECK_OFF(RTCState, irq);
+    GEN_CHECK_OFF(RTCState, fUTC);
+    GEN_CHECK_OFF(RTCState, IOPortBase);
     GEN_CHECK_OFF(RTCState, pPeriodicTimerR0);
     GEN_CHECK_OFF(RTCState, pPeriodicTimerR3);
     GEN_CHECK_OFF(RTCState, pPeriodicTimerRC);
@@ -566,7 +570,6 @@ int main()
     GEN_CHECK_OFF(RTCState, pDevInsR0);
     GEN_CHECK_OFF(RTCState, pDevInsR3);
     GEN_CHECK_OFF(RTCState, pDevInsRC);
-    GEN_CHECK_OFF(RTCState, fUTC);
     GEN_CHECK_OFF(RTCState, RtcReg);
     GEN_CHECK_OFF(RTCState, pRtcHlpR3);
     GEN_CHECK_OFF(RTCState, cRelLogEntries);
@@ -781,6 +784,7 @@ int main()
     GEN_CHECK_OFF(ATACONTROLLER, AsyncIOReqTail);
     GEN_CHECK_OFF(ATACONTROLLER, AsyncIORequestMutex);
     GEN_CHECK_OFF(ATACONTROLLER, SuspendIOSem);
+    GEN_CHECK_OFF(ATACONTROLLER, fSignalIdle);
     GEN_CHECK_OFF(ATACONTROLLER, DelayIRQMillies);
     GEN_CHECK_OFF(ATACONTROLLER, u64ResetTime);
     GEN_CHECK_OFF(ATACONTROLLER, StatAsyncOps);
@@ -1099,6 +1103,7 @@ int main()
     GEN_CHECK_OFF(AHCIATACONTROLLER, AsyncIORequestMutex);
     GEN_CHECK_OFF(AHCIATACONTROLLER, SuspendIOSem);
     GEN_CHECK_OFF(AHCIATACONTROLLER, DelayIRQMillies);
+    GEN_CHECK_OFF(AHCIATACONTROLLER, fSignalIdle);
     GEN_CHECK_OFF(AHCIATACONTROLLER, StatAsyncOps);
     GEN_CHECK_OFF(AHCIATACONTROLLER, StatAsyncMinWait);
     GEN_CHECK_OFF(AHCIATACONTROLLER, StatAsyncMaxWait);
@@ -1214,12 +1219,14 @@ int main()
     GEN_CHECK_OFF(AHCI, ahciPort[AHCI_MAX_NR_PORTS_IMPL-1]);
     GEN_CHECK_OFF(AHCI, aCts);
     GEN_CHECK_OFF(AHCI, aCts[1]);
+    GEN_CHECK_OFF(AHCI, lock);
+    GEN_CHECK_OFF(AHCI, hEvtIdle);
     GEN_CHECK_OFF(AHCI, u32PortsInterrupted);
     GEN_CHECK_OFF(AHCI, fReset);
     GEN_CHECK_OFF(AHCI, f64BitAddr);
     GEN_CHECK_OFF(AHCI, fGCEnabled);
     GEN_CHECK_OFF(AHCI, fR0Enabled);
-    GEN_CHECK_OFF(AHCI, lock);
+    GEN_CHECK_OFF(AHCI, fSignalIdle);
     GEN_CHECK_OFF(AHCI, cPortsImpl);
     GEN_CHECK_OFF(AHCI, f8ByteMMIO4BytesWrittenSuccessfully);
     GEN_CHECK_OFF(AHCI, cHighIOThreshold);
@@ -1277,7 +1284,7 @@ int main()
 #endif
     GEN_CHECK_OFF(E1KSTATE, hTxSem);
     GEN_CHECK_OFF(E1KSTATE, addrMMReg);
-    GEN_CHECK_OFF(E1KSTATE, macAddress);
+    GEN_CHECK_OFF(E1KSTATE, macConfigured);
     GEN_CHECK_OFF(E1KSTATE, addrIOPort);
     GEN_CHECK_OFF(E1KSTATE, pciDevice);
     GEN_CHECK_OFF(E1KSTATE, u64AckedAt);

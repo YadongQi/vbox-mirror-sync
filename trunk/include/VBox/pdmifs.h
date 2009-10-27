@@ -2555,8 +2555,8 @@ typedef struct PDMISCSICONNECTOR
      * Submits a SCSI request for execution.
      *
      * @returns VBox status code.
-     * @param   pInterface    Pointer to this interface.
-     * @param   pSCSIRequest  Pointer to the SCSI request to execute.
+     * @param   pInterface      Pointer to this interface.
+     * @param   pSCSIRequest    Pointer to the SCSI request to execute.
      */
      DECLR3CALLBACKMEMBER(int, pfnSCSIRequestSend, (PPDMISCSICONNECTOR pInterface, PPDMSCSIREQUEST pSCSIRequest));
 

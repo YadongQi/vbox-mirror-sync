@@ -1451,7 +1451,7 @@ int Appliance::importFS(TaskImportOVF *pTask)
             if (vsdeHDCIDE.size() == 1)
             {
                 ComPtr<IStorageController> pController;
-                rc = pNewMachine->GetStorageControllerByName(Bstr("IDE Controller"), pController.asOutParam());
+                rc = pNewMachine->AddStorageController(Bstr("IDE Controller"), StorageBus_IDE, pController.asOutParam());
                 if (FAILED(rc)) throw rc;
 
                 const char *pcszIDEType = vsdeHDCIDE.front()->strVbox.c_str();
@@ -1479,7 +1479,7 @@ int Appliance::importFS(TaskImportOVF *pTask)
                 const Utf8Str &hdcVBox = vsdeHDCSATA.front()->strVbox;
                 if (hdcVBox == "AHCI")
                 {
-                    rc = pNewMachine->AddStorageController(Bstr("SATA"), StorageBus_SATA, pController.asOutParam());
+                    rc = pNewMachine->AddStorageController(Bstr("SATA Controller"), StorageBus_SATA, pController.asOutParam());
                     if (FAILED(rc)) throw rc;
                 }
                 else
@@ -1509,7 +1509,7 @@ int Appliance::importFS(TaskImportOVF *pTask)
                                    tr("Invalid SCSI controller type \"%s\""),
                                    hdcVBox.c_str());
 
-                rc = pNewMachine->AddStorageController(Bstr("SCSI"), StorageBus_SCSI, pController.asOutParam());
+                rc = pNewMachine->AddStorageController(Bstr("SCSI Controller"), StorageBus_SCSI, pController.asOutParam());
                 if (FAILED(rc)) throw rc;
                 rc = pController->COMSETTER(ControllerType)(controllerType);
                 if (FAILED(rc)) throw rc;
