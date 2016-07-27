@@ -2382,6 +2382,7 @@ static int rtldrPE_VerifySignatureRead(PRTLDRMODPE pModPe, PRTLDRPESIGNATURE *pp
  */
 static void rtldrPE_VerifySignatureDestroy(PRTLDRMODPE pModPe, PRTLDRPESIGNATURE pSignature)
 {
+    RT_NOREF_PV(pModPe);
     RTCrPkcs7ContentInfo_Delete(&pSignature->ContentInfo);
     RTMemTmpFree(pSignature);
 }
@@ -2400,6 +2401,7 @@ static int rtldrPE_VerifySignatureDecode(PRTLDRMODPE pModPe, PRTLDRPESIGNATURE p
     WIN_CERTIFICATE const  *pEntry = pSignature->pRawData;
     AssertReturn(pEntry->wCertificateType == WIN_CERT_TYPE_PKCS_SIGNED_DATA, VERR_INTERNAL_ERROR_2);
     AssertReturn(pEntry->wRevision        == WIN_CERT_REVISION_2_0, VERR_INTERNAL_ERROR_2);
+    RT_NOREF_PV(pModPe);
 
     RTASN1CURSORPRIMARY PrimaryCursor;
     RTAsn1CursorInitPrimary(&PrimaryCursor,
@@ -2765,6 +2767,7 @@ static DECLCALLBACK(int) rtldrPE_VerifySignature(PRTLDRMODINTERNAL pMod, PFNRTLD
     }
     return rc;
 #else
+    RT_NOREF_PV(pMod); RT_NOREF_PV(pfnCallback); RT_NOREF_PV(pvUser); RT_NOREF_PV(pErrInfo);
     return VERR_NOT_SUPPORTED;
 #endif
 }
@@ -3053,6 +3056,8 @@ static const char *rtldrPEGetArchName(uint16_t uMachine)
  */
 static int rtldrPEValidateFileHeader(PIMAGE_FILE_HEADER pFileHdr, uint32_t fFlags, const char *pszLogName, PRTLDRARCH penmArch)
 {
+    RT_NOREF_PV(pszLogName);
+
     size_t cbOptionalHeader;
     switch (pFileHdr->Machine)
     {
@@ -3114,6 +3119,8 @@ static int rtldrPEValidateFileHeader(PIMAGE_FILE_HEADER pFileHdr, uint32_t fFlag
 static int rtldrPEValidateOptionalHeader(const IMAGE_OPTIONAL_HEADER64 *pOptHdr, const char *pszLogName, RTFOFF offNtHdrs,
                                          const IMAGE_FILE_HEADER *pFileHdr, RTFOFF cbRawImage, uint32_t fFlags)
 {
+    RT_NOREF_PV(pszLogName);
+
     const uint16_t CorrectMagic = pFileHdr->SizeOfOptionalHeader == sizeof(IMAGE_OPTIONAL_HEADER32)
                                 ? IMAGE_NT_OPTIONAL_HDR32_MAGIC : IMAGE_NT_OPTIONAL_HDR64_MAGIC;
     if (pOptHdr->Magic != CorrectMagic)
@@ -3305,6 +3312,8 @@ static int rtldrPEValidateOptionalHeader(const IMAGE_OPTIONAL_HEADER64 *pOptHdr,
 static int rtldrPEValidateSectionHeaders(const IMAGE_SECTION_HEADER *paSections, unsigned cSections, const char *pszLogName,
                                          const IMAGE_OPTIONAL_HEADER64 *pOptHdr, RTFOFF cbRawImage, uint32_t fFlags, bool fNoCode)
 {
+    RT_NOREF_PV(pszLogName);
+
     const uint32_t              cbImage  = pOptHdr->SizeOfImage;
     const IMAGE_SECTION_HEADER *pSH      = &paSections[0];
     uint32_t                    uRvaPrev = pOptHdr->SizeOfHeaders;

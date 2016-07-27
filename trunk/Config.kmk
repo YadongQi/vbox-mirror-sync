@@ -430,19 +430,21 @@ VBOX_WITH_NAT_SERVICE = 1
 VBOX_WITH_E1000 = 1
 # Enable the Virtio feature.
 VBOX_WITH_VIRTIO = 1
-# Enable new PS/2 mouse emulation.
-VBOX_WITH_NEW_PS2M = 1
 ifn1of ($(KBUILD_TARGET), win darwin)
  # Enable OSS audio support.
- VBOX_WITH_OSS = 1
+ VBOX_WITH_AUDIO_OSS = 1
 endif
 if1of ($(KBUILD_TARGET), linux)
  # Enable ALSA audio support.
- VBOX_WITH_ALSA = 1
+ VBOX_WITH_AUDIO_ALSA = 1
 endif
 if1of ($(KBUILD_TARGET), linux)
  # Enable PulseAudio audio support.
- VBOX_WITH_PULSE = 1
+ VBOX_WITH_AUDIO_PULSE = 1
+endif
+ifeq ($(KBUILD_TYPE),debug)
+ ## @todo Only build if running on test boxes?
+ VBOX_WITH_AUDIO_DEBUG =
 endif
 # Enable PCI passthrough support.
 VBOX_WITH_PCI_PASSTHROUGH = 1
@@ -694,8 +696,6 @@ if1of ($(KBUILD_TARGET), darwin linux solaris win)
 endif
 # Enable audio support for VRDE.
 VBOX_WITH_VRDE_AUDIO = 1
-# Enable to use the VBox 5.0 audio framework
-#VBOX_WITH_AUDIO_50 := 1
 # Use the VRDE external authentication library from VBoxSVC.
 if1of ($(KBUILD_TARGET), win)
  VBOX_WITH_VRDEAUTH_IN_VBOXSVC = 1
@@ -1164,18 +1164,6 @@ ifdef VBOX_OSE
  VBOX_BRAND_GUI_VBOX_64PX_PNG        := $(PATH_ROOT)/src/VBox/Frontends/VirtualBox/images/OSE/VirtualBox_64px.png
  VBOX_BRAND_GUI_CUBE_42PX_PNG        := $(PATH_ROOT)/src/VBox/Frontends/VirtualBox/images/OSE/VirtualBox_cube_42px.png
  VBOX_BRAND_GUI_VBOX_SVG             := $(PATH_ROOT)/src/VBox/Artwork/OSE/virtualbox.svg
-endif
-
-#
-# Audio: Which code base to use.
-# This can be overriden in LocalConfig.kmk.
-#
-ifdef VBOX_WITH_AUDIO_50
- VBOX_AUDIO_PATH_SOURCES=Audio_old
- VBOX_AUDIO_FILE_SUFFIX=_old
-else
- VBOX_AUDIO_PATH_SOURCES=Audio
- VBOX_AUDIO_FILE_SUFFIX=
 endif
 
 #
@@ -3607,7 +3595,7 @@ ifeq ($(KBUILD_TARGET),solaris)
   VBOX_WITH_ADDITIONS =
  else ifeq ($(VBOX_SOLARIS_VERSION),511)
   # OSS audio support for Solaris
-  VBOX_WITH_OSS := $(if-expr $(VBOX_SOLARIS_11_VERSION) >= 115,1,)
+  VBOX_WITH_AUDIO_OSS := $(if-expr $(VBOX_SOLARIS_11_VERSION) >= 115,1,)
  endif
 
  # XPCOM namespace cleanup issue with Solaris GCC 4.5.2 and newer, see @bugref{5838}.

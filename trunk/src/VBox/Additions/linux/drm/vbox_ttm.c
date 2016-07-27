@@ -4,7 +4,7 @@
  */
 
 /*
- * Copyright (C) 2013 Oracle Corporation
+ * Copyright (C) 2013-2016 Oracle Corporation
  *
  * This file is part of VirtualBox Open Source Edition (OSE), as
  * available from http://www.virtualbox.org. This file is free software;
@@ -300,7 +300,7 @@ int vbox_mm_init(struct vbox_private *vbox)
     }
 
     ret = ttm_bo_init_mm(bdev, TTM_PL_VRAM,
-                 vbox->vram_size >> PAGE_SHIFT);
+                 vbox->available_vram_size >> PAGE_SHIFT);
     if (ret) {
         DRM_ERROR("Failed ttm VRAM init: %d\n", ret);
         return ret;

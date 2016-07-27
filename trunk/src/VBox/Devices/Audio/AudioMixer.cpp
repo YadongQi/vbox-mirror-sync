@@ -276,8 +276,8 @@ int AudioMixerSetDeviceFormat(PAUDIOMIXER pMixer, PPDMAUDIOSTREAMCFG pCfg)
  * Sets the mixer's master volume.
  *
  * @returns IPRT status code.
- * @param   pMixer          Mixer to set master volume for.
- * @param   pVol            Volume to set.
+ * @param   pMixer              Mixer to set master volume for.
+ * @param   pVol                Volume to set.
  */
 int AudioMixerSetMasterVolume(PAUDIOMIXER pMixer, PPDMAUDIOVOLUME pVol)
 {
@@ -339,7 +339,7 @@ int AudioMixerSinkAddStream(PAUDMIXSINK pSink, PAUDMIXSTREAM pStream)
 #endif /* VBOX_AUDIO_MIXER_WITH_MIXBUF */
         }
         else
-            rc = VERR_WRONG_TYPE;
+            AssertFailedStmt(rc = VERR_WRONG_TYPE);
     }
     else if (pStream->enmDir == PDMAUDIODIR_OUT)
     {
@@ -354,7 +354,7 @@ int AudioMixerSinkAddStream(PAUDMIXSINK pSink, PAUDMIXSTREAM pStream)
 #endif /* VBOX_AUDIO_MIXER_WITH_MIXBUF */
         }
         else
-            rc = VERR_WRONG_TYPE;
+            AssertFailedStmt(rc = VERR_WRONG_TYPE);
     }
     else
         AssertFailedStmt(rc = VERR_NOT_IMPLEMENTED);
@@ -386,9 +386,9 @@ int AudioMixerSinkAddStream(PAUDMIXSINK pSink, PAUDMIXSTREAM pStream)
 int AudioMixerSinkCreateStream(PAUDMIXSINK pSink,
                                PPDMIAUDIOCONNECTOR pConn, PPDMAUDIOSTREAMCFG pCfg, uint32_t fFlags, PAUDMIXSTREAM *ppStream)
 {
-    AssertPtrReturn(pSink,  VERR_INVALID_POINTER);
-    AssertPtrReturn(pConn,  VERR_INVALID_POINTER);
-    AssertPtrReturn(pCfg,   VERR_INVALID_POINTER);
+    AssertPtrReturn(pSink, VERR_INVALID_POINTER);
+    AssertPtrReturn(pConn, VERR_INVALID_POINTER);
+    AssertPtrReturn(pCfg,  VERR_INVALID_POINTER);
     /** @todo Validate fFlags. */
     /* ppStream is optional. */
 
@@ -785,7 +785,7 @@ void AudioMixerSinkRemoveStream(PAUDMIXSINK pSink, PAUDMIXSTREAM pStream)
 /**
  * Removes all attached streams from a given sink.
  *
- * @param pSink         Sink to remove attached streams from.
+ * @param pSink                 Sink to remove attached streams from.
  */
 static void audioMixerSinkRemoveAllStreamsInternal(PAUDMIXSINK pSink)
 {
@@ -802,7 +802,7 @@ static void audioMixerSinkRemoveAllStreamsInternal(PAUDMIXSINK pSink)
 /**
  * Resets the sink's state.
  *
- * @param   pSink       Sink to reset.
+ * @param   pSink               Sink to reset.
  */
 static void audioMixerSinkReset(PAUDMIXSINK pSink)
 {
@@ -838,7 +838,7 @@ static void audioMixerSinkReset(PAUDMIXSINK pSink)
 /**
  * Removes all attached streams from a given sink.
  *
- * @param pSink         Sink to remove attached streams from.
+ * @param pSink                 Sink to remove attached streams from.
  */
 void AudioMixerSinkRemoveAllStreams(PAUDMIXSINK pSink)
 {
@@ -891,8 +891,8 @@ int AudioMixerSinkSetFormat(PAUDMIXSINK pSink, PPDMPCMPROPS pPCMProps)
  * Set the volume of an individual sink.
  *
  * @returns IPRT status code.
- * @param   pSink           Sink to set volume for.
- * @param   pVol            Volume to set.
+ * @param   pSink               Sink to set volume for.
+ * @param   pVol                Volume to set.
  */
 int AudioMixerSinkSetVolume(PAUDMIXSINK pSink, PPDMAUDIOVOLUME pVol)
 {

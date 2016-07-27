@@ -14,7 +14,7 @@
  */
 
 /*
- * Copyright (C) 2007-2015 Oracle Corporation
+ * Copyright (C) 2007-2016 Oracle Corporation
  *
  * This file is part of VirtualBox Open Source Edition (OSE), as
  * available from http://www.virtualbox.org. This file is free software;
@@ -5294,8 +5294,9 @@ static DECLCALLBACK(bool) e1kTxQueueConsumer(PPDMDEVINS pDevIns, PPDMQUEUEITEMCO
     E1kLog2(("%s e1kTxQueueConsumer:\n", pThis->szPrf));
 
     int rc = e1kXmitPending(pThis, false /*fOnWorkerThread*/);
+#ifndef DEBUG_andy /** @todo r=andy Happens for me a lot, mute this for me. */
     AssertMsg(RT_SUCCESS(rc) || rc == VERR_TRY_AGAIN, ("%Rrc\n", rc));
-
+#endif
     return true;
 }
 

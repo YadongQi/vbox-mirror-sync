@@ -35,11 +35,6 @@
 # include <VBox/vmm/stam.h>
 #endif
 
-#ifdef VBOX_WITH_AUDIO_50
-# undef ___VBox_vmm_pdmaudioifs_h
-# include "pdmaudioifs_old.h"
-#else
-
 /** @defgroup grp_pdm_ifs_audio     PDM Audio Interfaces
  * @ingroup grp_pdm_interfaces
  * @{
@@ -492,6 +487,40 @@ typedef struct PDMAUDIOMIXBUF
     /** For quickly converting samples <-> bytes and vice versa. */
     uint8_t                   cShift;
 } PDMAUDIOMIXBUF;
+
+typedef uint32_t PDMAUDIOFILEFLAGS;
+
+/* No flags defined. */
+#define PDMAUDIOFILEFLAG_NONE            0
+
+/**
+ * Audio file types.
+ */
+typedef enum PDMAUDIOFILETYPE
+{
+    /** Unknown type, do not use. */
+    PDMAUDIOFILETYPE_UNKNOWN = 0,
+    /** Wave (.WAV) file. */
+    PDMAUDIOFILETYPE_WAV
+} PDMAUDIOFILETYPE;
+
+/**
+ * Structure for an audio file handle.
+ */
+typedef struct PDMAUDIOFILE
+{
+    /** Type of the audio file. */
+    PDMAUDIOFILETYPE enmType;
+    /** File name. */
+    char             szName[255];
+    /** Actual file handle. */
+    RTFILE           hFile;
+    /** Data needed for the specific audio file type implemented.
+     *  Optional, can be NULL. */
+    void            *pvData;
+    /** Data size (in bytes). */
+    size_t           cbData;
+} PDMAUDIOFILE, *PPDMAUDIOFILE;
 
 /** Stream status flag. To be used with PDMAUDIOSTRMSTS_FLAG_ flags. */
 typedef uint32_t PDMAUDIOSTRMSTS;
@@ -973,8 +1002,6 @@ typedef struct PDMIHOSTAUDIO
 #define PDMIHOSTAUDIO_IID                           "96AC69D0-F301-42AC-8F1D-1E19BA808887"
 
 /** @} */
-
-#endif /* VBOX_WITH_AUDIO_50 */
 
 #endif /* !___VBox_vmm_pdmaudioifs_h */
 
