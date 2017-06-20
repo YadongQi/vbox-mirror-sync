@@ -68,7 +68,7 @@ public:
 
 protected:
 
-    /** @name Event-handling stuff.
+    /** @name Qt event handlers.
       * @{ */
         /** Handles translation event. */
         virtual void retranslateUi() /* override */;
@@ -84,12 +84,22 @@ private slots:
 
     /** @name Main event handlers.
       * @{ */
-        /** Handles machine data change for machine with @a strMachineID. */
-        void sltMachineDataChange(QString strMachineID);
-        /** Handles machine @a enmState change for machine with @a strMachineID. */
-        void sltMachineStateChange(QString strMachineID, KMachineState enmState);
-        /** Handles session @a enmState change for machine with @a strMachineID. */
-        void sltSessionStateChange(QString strMachineID, KSessionState enmState);
+        /** Handles machine data change for machine with @a strMachineId. */
+        void sltHandleMachineDataChange(QString strMachineId);
+        /** Handles machine @a enmState change for machine with @a strMachineId. */
+        void sltHandleMachineStateChange(QString strMachineId, KMachineState enmState);
+
+        /** Handles session @a enmState change for machine with @a strMachineId. */
+        void sltHandleSessionStateChange(QString strMachineId, KSessionState enmState);
+
+        /** Handles snapshot take event for machine with @a strMachineId. */
+        void sltHandleSnapshotTake(QString strMachineId, QString strSnapshotId);
+        /** Handles snapshot delete event for machine with @a strMachineId. */
+        void sltHandleSnapshotDelete(QString strMachineId, QString strSnapshotId);
+        /** Handles snapshot change event for machine with @a strMachineId. */
+        void sltHandleSnapshotChange(QString strMachineId, QString strSnapshotId);
+        /** Handles snapshot restore event for machine with @a strMachineId. */
+        void sltHandleSnapshotRestore(QString strMachineId, QString strSnapshotId);
     /** @} */
 
     /** @name Timer event handlers.
@@ -172,8 +182,6 @@ private:
 
         /** Searches for an item with corresponding @a strSnapshotID. */
         UISnapshotItem *findItem(const QString &strSnapshotID) const;
-        /** Returns the "current state" item. */
-        UISnapshotItem *currentStateItem() const;
 
         /** Searches for smallest snapshot age starting with @a pItem as parent. */
         SnapshotAgeFormat traverseSnapshotAge(QTreeWidgetItem *pItem) const;
@@ -184,7 +192,7 @@ private:
         /** Holds the COM machine object. */
         CMachine       m_comMachine;
         /** Holds the machine object ID. */
-        QString        m_strMachineID;
+        QString        m_strMachineId;
         /** Holds the cached session state. */
         KSessionState  m_enmSessionState;
 
@@ -222,8 +230,10 @@ private:
 
         /** Holds the snapshot tree instance. */
         UISnapshotTree *m_pSnapshotTree;
-        /** Holds the current snapshot item reference. */
+        /** Holds the "current snapshot" item reference. */
         UISnapshotItem *m_pCurrentSnapshotItem;
+        /** Holds the "current state" item reference. */
+        UISnapshotItem *m_pCurrentStateItem;
 
         /** Holds the details-widget instance. */
         UISnapshotDetailsWidget *m_pDetailsWidget;

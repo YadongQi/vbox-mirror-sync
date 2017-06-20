@@ -54,13 +54,13 @@
 *   Defined Constants And Macros                                                                                                 *
 *********************************************************************************************************************************/
 /** Asserts valid handle, returns @a a_rcRet if not. */
-#define RTFSISOMAKER_ASSER_VALID_HANDLE_RET_EX(a_pThis, a_rcRet) \
+#define RTFSISOMAKER_ASSERT_VALID_HANDLE_RET_EX(a_pThis, a_rcRet) \
     do { AssertPtrReturn(a_pThis, a_rcRet); \
          AssertReturn((a_pThis)->uMagic == RTFSISOMAKERINT_MAGIC, a_rcRet); \
     } while (0)
 
 /** Asserts valid handle, returns VERR_INVALID_HANDLE if not. */
-#define RTFSISOMAKER_ASSER_VALID_HANDLE_RET(a_pThis) RTFSISOMAKER_ASSER_VALID_HANDLE_RET_EX(a_pThis, VERR_INVALID_HANDLE)
+#define RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(a_pThis) RTFSISOMAKER_ASSERT_VALID_HANDLE_RET_EX(a_pThis, VERR_INVALID_HANDLE)
 
 /** The sector size. */
 #define RTFSISOMAKER_SECTOR_SIZE            _2K
@@ -86,9 +86,25 @@
 #define RTFSISOMAKER_IS_UPPER_IN_D_CHARS(a_ch)  (RT_C_IS_ALNUM(a_ch) || (a_ch) == '_')
 
 
-/** Calculates the path table record size given the name length. */
+/** Calculates the path table record size given the name length.
+ * @note  The root directory length is 1 (name byte is 0x00), we make sure this
+ *        is the case in rtFsIsoMakerNormalizeNameForNamespace. */
 #define RTFSISOMAKER_CALC_PATHREC_SIZE(a_cbNameInDirRec) \
-    ( RT_UOFFSETOF(ISO9660PATHREC, achDirId[(a_cbNameInDirRec)]) + ((a_cbNameInDirRec) & 1) )
+    ( RT_UOFFSETOF(ISO9660PATHREC, achDirId[(a_cbNameInDirRec) + ((a_cbNameInDirRec) & 1)]) )
+
+
+/** No validation entry in the boot catalog. */
+#define VERR_ISOMK_BOOT_CAT_NO_VALIDATION_ENTRY                 (-24900)
+/** No default entry in the boot catalog. */
+#define VERR_ISOMK_BOOT_CAT_NO_DEFAULT_ENTRY                    (-24901)
+/** Expected section header. */
+#define VERR_ISOMK_BOOT_CAT_EXPECTED_SECTION_HEADER             (-24902)
+/** Entry in a boot catalog section is empty. */
+#define VERR_ISOMK_BOOT_CAT_EMPTY_ENTRY                         (-24903)
+/** Entry in a boot catalog section is another section. */
+#define VERR_ISOMK_BOOT_CAT_INVALID_SECTION_SIZE                (-24904)
+/** Unsectioned boot catalog entry. */
+#define VERR_ISOMK_BOOT_CAT_ERRATIC_ENTRY                       (-24905)
 
 
 /*********************************************************************************************************************************
@@ -328,7 +344,7 @@ typedef struct RTFSISOMAKEROBJ
 
     /** Used to make sure things like the boot catalog stays in the image even if
      * it's not mapped into any of the namespaces. */
-    bool                    fNotOrphan;
+    uint32_t                cNotOrphan;
 } RTFSISOMAKEROBJ;
 
 
@@ -340,6 +356,7 @@ typedef enum RTFSISOMAKERSRCTYPE
     RTFSISOMAKERSRCTYPE_INVALID = 0,
     RTFSISOMAKERSRCTYPE_PATH,
     RTFSISOMAKERSRCTYPE_VFS_FILE,
+    RTFSISOMAKERSRCTYPE_COMMON,
     RTFSISOMAKERSRCTYPE_TRANS_TBL,
     RTFSISOMAKERSRCTYPE_END
 } RTFSISOMAKERSRCTYPE;
@@ -367,9 +384,21 @@ typedef struct RTFSISOMAKERFILE
         const char         *pszSrcPath;
         /** Source VFS file. */
         RTVFSFILE           hVfsFile;
+        /** Source is a part of a common VFS file. */
+        struct
+        {
+            /** The offset into the file */
+            uint64_t        offData;
+            /** The index of the common file. */
+            uint32_t        idxSrc;
+        } Common;
         /** The directory the translation table belongs to. */
         PRTFSISOMAKERNAME   pTransTblDir;
     } u;
+
+    /** Boot info table to patch into the file.
+     * This is calculated during file finalization as it needs the file location. */
+    PISO9660SYSLINUXINFOTABLE pBootInfoTable;
 
     /** Entry in the list of finalized directories. */
     RTLISTNODE              FinalizedEntry;
@@ -444,6 +473,32 @@ typedef struct RTFSISOMAKERINT
     /** The default file mode mask. */
     RTFMODE                 fDefaultDirMode;
 
+    /** Number of common source files. */
+    uint32_t                cCommonSources;
+    /** Array of common source file handles. */
+    PRTVFSFILE              paCommonSources;
+
+    /** @name Boot related stuff
+     * @{ */
+    /** The boot catalog file. */
+    PRTFSISOMAKERFILE       pBootCatFile;
+    /** Per boot catalog entry data needed for updating offsets when finalizing. */
+    struct
+    {
+        /** The type (ISO9660_ELTORITO_HEADER_ID_VALIDATION_ENTRY,
+         * ISO9660_ELTORITO_HEADER_ID_SECTION_HEADER,
+         * ISO9660_ELTORITO_HEADER_ID_FINAL_SECTION_HEADER,
+         * ISO9660_ELTORITO_BOOT_INDICATOR_BOOTABLE or
+         * ISO9660_ELTORITO_BOOT_INDICATOR_NOT_BOOTABLE). */
+        uint8_t             bType;
+        /** Number of entries related to this one.  This is zero for unused entries,
+         *  2 for the validation entry, 2+ for section headers, and 1 for images. */
+        uint8_t             cEntries;
+        /** The boot file. */
+        PRTFSISOMAKERFILE   pBootFile;
+    }                       aBootCatEntries[64];
+    /** @} */
+
     /** @name Finalized image stuff
      * @{ */
     /** The finalized image size. */
@@ -460,9 +515,8 @@ typedef struct RTFSISOMAKERINT
     uint8_t                *pbVolDescs;
     /** Pointer to the primary volume descriptor. */
     PISO9660PRIMARYVOLDESC  pPrimaryVolDesc;
-    /** El Torito volume descriptor.
-     * @todo fix type  */
-    PISO9660BOOTRECORD      pElToritoDesc;
+    /** El Torito volume descriptor. */
+    PISO9660BOOTRECORDELTORITO pElToritoDesc;
     /** Pointer to the primary volume descriptor. */
     PISO9660SUPVOLDESC      pJolietVolDesc;
     /** Terminating ISO-9660 volume descriptor. */
@@ -725,6 +779,11 @@ RTDECL(int) RTFsIsoMakerCreate(PRTFSISOMAKER phIsoMaker)
         pThis->fDefaultFileMode             = 0444 | RTFS_TYPE_FILE      | RTFS_DOS_ARCHIVED  | RTFS_DOS_READONLY;
         pThis->fDefaultDirMode              = 0555 | RTFS_TYPE_DIRECTORY | RTFS_DOS_DIRECTORY | RTFS_DOS_READONLY;
 
+        //pThis->cCommonSources             = 0;
+        //pThis->paCommonSources            = NULL;
+
+        //pThis->pBootCatFile               = NULL;
+
         pThis->cbFinalizedImage             = UINT64_MAX;
         //pThis->pbSysArea                  = NULL;
         //pThis->cbSysArea                  = 0;
@@ -798,12 +857,20 @@ DECLINLINE(void) rtFsIsoMakerObjDestroy(PRTFSISOMAKEROBJ pObj)
                 pFile->u.hVfsFile = NIL_RTVFSFILE;
                 break;
 
+            case RTFSISOMAKERSRCTYPE_COMMON:
+                break;
+
             case RTFSISOMAKERSRCTYPE_INVALID:
             case RTFSISOMAKERSRCTYPE_END:
                 AssertFailed();
                 break;
 
             /* no default, want warnings */
+        }
+        if (pFile->pBootInfoTable)
+        {
+            RTMemFree(pFile->pBootInfoTable);
+            pFile->pBootInfoTable = NULL;
         }
     }
 
@@ -968,6 +1035,15 @@ static void rtFsIsoMakerDestroy(PRTFSISOMAKERINT pThis)
         RTListNodeRemove(&pCur->Entry);
         rtFsIsoMakerObjDestroy(pCur);
     }
+
+    if (pThis->paCommonSources)
+    {
+        RTMemFree(pThis->paCommonSources);
+        pThis->paCommonSources = NULL;
+    }
+
+    pThis->uMagic = ~RTFSISOMAKERINT_MAGIC;
+    RTMemFree(pThis);
 }
 
 
@@ -1024,7 +1100,7 @@ RTDECL(uint32_t) RTFsIsoMakerRelease(RTFSISOMAKER hIsoMaker)
 RTDECL(int) RTFsIsoMakerSetIso9660Level(RTFSISOMAKER hIsoMaker, uint8_t uIsoLevel)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(uIsoLevel <= 3, VERR_INVALID_PARAMETER);
     AssertReturn(uIsoLevel > 0, VERR_INVALID_PARAMETER); /* currently not possible to disable this */
     AssertReturn(!pThis->fSeenContent, VERR_WRONG_ORDER);
@@ -1045,7 +1121,7 @@ RTDECL(int) RTFsIsoMakerSetIso9660Level(RTFSISOMAKER hIsoMaker, uint8_t uIsoLeve
 RTDECL(int) RTFsIsoMakerSetJolietUcs2Level(RTFSISOMAKER hIsoMaker, uint8_t uJolietLevel)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(uJolietLevel <= 3, VERR_INVALID_PARAMETER);
     AssertReturn(!pThis->fSeenContent, VERR_WRONG_ORDER);
 
@@ -1072,7 +1148,7 @@ RTDECL(int) RTFsIsoMakerSetJolietUcs2Level(RTFSISOMAKER hIsoMaker, uint8_t uJoli
 RTDECL(int) RTFsIsoMakerSetRockRidgeLevel(RTFSISOMAKER hIsoMaker, uint8_t uLevel)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(!pThis->fSeenContent, VERR_WRONG_ORDER);
     AssertReturn(uLevel <= 2, VERR_INVALID_PARAMETER);
 
@@ -1092,7 +1168,7 @@ RTDECL(int) RTFsIsoMakerSetRockRidgeLevel(RTFSISOMAKER hIsoMaker, uint8_t uLevel
 RTDECL(int) RTFsIsoMakerSetJolietRockRidgeLevel(RTFSISOMAKER hIsoMaker, uint8_t uLevel)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(!pThis->fSeenContent, VERR_WRONG_ORDER);
     AssertReturn(uLevel <= 2, VERR_INVALID_PARAMETER);
 
@@ -1100,6 +1176,50 @@ RTDECL(int) RTFsIsoMakerSetJolietRockRidgeLevel(RTFSISOMAKER hIsoMaker, uint8_t 
     return VINF_SUCCESS;
 }
 
+
+/**
+ * Sets the content of the system area, i.e. the first 32KB of the image.
+ *
+ * This can be used to put generic boot related stuff.
+ *
+ * @note    Other settings may overwrite parts of the content (yet to be
+ *          determined which).
+ *
+ * @returns IPRT status code
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   pvContent           The content to put in the system area.
+ * @param   cbContent           The size of the content.
+ * @param   off                 The offset into the system area.
+ */
+RTDECL(int) RTFsIsoMakerSetSysAreaContent(RTFSISOMAKER hIsoMaker, void const *pvContent, size_t cbContent, uint32_t off)
+{
+    /*
+     * Validate input.
+     */
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+    AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
+    AssertReturn(cbContent > 0, VERR_OUT_OF_RANGE);
+    AssertReturn(cbContent <= _32K, VERR_OUT_OF_RANGE);
+    AssertReturn(off < _32K, VERR_OUT_OF_RANGE);
+    size_t cbSysArea = off + cbContent;
+    AssertReturn(cbSysArea <= _32K, VERR_OUT_OF_RANGE);
+
+    /*
+     * Adjust the allocation and copy over the new/additional content.
+     */
+    if (pThis->cbSysArea < cbSysArea)
+    {
+        void *pvNew = RTMemRealloc(pThis->pbSysArea, cbSysArea);
+        AssertReturn(pvNew, VERR_NO_MEMORY);
+        pThis->pbSysArea = (uint8_t *)pvNew;
+        memset(&pThis->pbSysArea[pThis->cbSysArea], 0, cbSysArea - pThis->cbSysArea);
+    }
+
+    memcpy(&pThis->pbSysArea[off], pvContent, cbContent);
+
+    return VINF_SUCCESS;
+}
 
 
 /*
@@ -1355,7 +1475,7 @@ static int rtFsIsoMakerWalkPathBySpec(PRTFSISOMAKERNAMESPACE pNamespace, const c
          */
         char ch;
         size_t cchComponent = 0;
-        while ((ch = pszPath[cchComponent]) != '\0' && RTPATH_IS_SLASH(ch))
+        while ((ch = pszPath[cchComponent]) != '\0' && !RTPATH_IS_SLASH(ch))
             cchComponent++;
         if (!cchComponent)
         {
@@ -1639,10 +1759,14 @@ static int rtFsIsoMakerNormalizeNameForNamespace(PRTFSISOMAKERINT pThis, PRTFSIS
     {
         /*
          * Root special case.
+         *
+         * For ISO-9660 and joliet, we enter it with a length of 1 byte.  The
+         * value byte value is zero.  The path tables we generate won't be
+         * accepted by windows unless we do this.
          */
         *pszDst      = '\0';
         *pcchDst     = 0;
-        *pcbInDirRec = 0;
+        *pcbInDirRec = pNamespace->fNamespace & (RTFSISOMAKER_NAMESPACE_ISO_9660 | RTFSISOMAKER_NAMESPACE_JOLIET) ? 1 : 0;
         AssertReturn(!pParent, VERR_INTERNAL_ERROR_3);
         return VINF_SUCCESS;
     }
@@ -1672,6 +1796,7 @@ static int rtFsIsoMakerAddTransTblFileToNewDir(PRTFSISOMAKERINT pThis, PRTFSISOM
     {
         pFile->enmSrcType     = RTFSISOMAKERSRCTYPE_TRANS_TBL;
         pFile->u.pTransTblDir = pDirName;
+        pFile->pBootInfoTable = NULL;
         pDirName->pDir->pTransTblFile = pFile;
 
         /*
@@ -1759,6 +1884,8 @@ static int rtFsIsoMakerObjSetName(PRTFSISOMAKERINT pThis, PRTFSISOMAKERNAMESPACE
                                                    szName, sizeof(szName), &cchName, &cbNameInDirRec);
     if (RT_SUCCESS(rc))
     {
+        Assert(cbNameInDirRec > 0);
+
         size_t cbName = sizeof(RTFSISOMAKERNAME)
                       + cchName + 1
                       + cchSpec + 1;
@@ -2192,7 +2319,7 @@ RTDECL(uint32_t) RTFsIsoMakerGetObjIdxForPath(RTFSISOMAKER hIsoMaker, uint32_t f
      * Validate input.
      */
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET_EX(pThis, UINT32_MAX);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET_EX(pThis, UINT32_MAX);
 
     /*
      * Do the searching.
@@ -2270,7 +2397,7 @@ RTDECL(int) RTFsIsoMakerObjRemove(RTFSISOMAKER hIsoMaker, uint32_t idxObj)
      * Validate and translate input.
      */
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     PRTFSISOMAKEROBJ pObj = rtFsIsoMakerIndexToObj(pThis, idxObj);
     AssertReturn(pObj, VERR_OUT_OF_RANGE);
     AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
@@ -2303,7 +2430,7 @@ RTDECL(int) RTFsIsoMakerObjSetPath(RTFSISOMAKER hIsoMaker, uint32_t idxObj, uint
      * Validate and translate input.
      */
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(!(fNamespaces & ~RTFSISOMAKER_NAMESPACE_VALID_MASK), VERR_INVALID_FLAGS);
     AssertPtrReturn(pszPath, VERR_INVALID_POINTER);
     AssertReturn(RTPATH_IS_SLASH(*pszPath), VERR_INVALID_NAME);
@@ -2352,7 +2479,7 @@ RTDECL(int) RTFsIsoMakerObjSetNameAndParent(RTFSISOMAKER hIsoMaker, uint32_t idx
      * Validate and translate input.
      */
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(!(fNamespaces & ~RTFSISOMAKER_NAMESPACE_VALID_MASK), VERR_INVALID_FLAGS);
     AssertPtrReturn(pszName, VERR_INVALID_POINTER);
     size_t cchName = strlen(pszName);
@@ -2389,6 +2516,89 @@ RTDECL(int) RTFsIsoMakerObjSetNameAndParent(RTFSISOMAKER hIsoMaker, uint32_t idx
 
 
 /**
+ * Enables or disable syslinux boot info table patching of a file.
+ *
+ * @returns IPRT status code.
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   idxObj              The configuration index.
+ * @param   fEnable             Whether to enable or disable patching.
+ */
+RTDECL(int) RTFsIsoMakerObjEnableBootInfoTablePatching(RTFSISOMAKER hIsoMaker, uint32_t idxObj, bool fEnable)
+{
+    /*
+     * Validate and translate input.
+     */
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+    AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
+    PRTFSISOMAKEROBJ pObj = rtFsIsoMakerIndexToObj(pThis, idxObj);
+    AssertReturn(pObj, VERR_OUT_OF_RANGE);
+    AssertReturn(pObj->enmType == RTFSISOMAKEROBJTYPE_FILE, VERR_WRONG_TYPE);
+    PRTFSISOMAKERFILE pFile = (PRTFSISOMAKERFILE)pObj;
+    AssertReturn(   pFile->enmSrcType == RTFSISOMAKERSRCTYPE_PATH
+                 || pFile->enmSrcType == RTFSISOMAKERSRCTYPE_VFS_FILE
+                 || pFile->enmSrcType == RTFSISOMAKERSRCTYPE_COMMON,
+                 VERR_WRONG_TYPE);
+
+    /*
+     * Do the job.
+     */
+    if (fEnable)
+    {
+        if (!pFile->pBootInfoTable)
+        {
+            pFile->pBootInfoTable = (PISO9660SYSLINUXINFOTABLE)RTMemAllocZ(sizeof(*pFile->pBootInfoTable));
+            AssertReturn(pFile->pBootInfoTable, VERR_NO_MEMORY);
+        }
+    }
+    else if (pFile->pBootInfoTable)
+    {
+        RTMemFree(pFile->pBootInfoTable);
+        pFile->pBootInfoTable = NULL;
+    }
+    return VINF_SUCCESS;
+}
+
+
+/**
+ * Gets the data size of an object.
+ *
+ * Currently only supported on file objects.
+ *
+ * @returns IPRT status code.
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   idxObj              The configuration index.
+ * @param   pcbData             Where to return the size.
+ */
+RTDECL(int) RTFsIsoMakerObjQueryDataSize(RTFSISOMAKER hIsoMaker, uint32_t idxObj, uint64_t *pcbData)
+{
+    /*
+     * Validate and translate input.
+     */
+    AssertPtrReturn(pcbData, VERR_INVALID_POINTER);
+    *pcbData = UINT64_MAX;
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+    PRTFSISOMAKEROBJ pObj = rtFsIsoMakerIndexToObj(pThis, idxObj);
+    AssertReturn(pObj, VERR_OUT_OF_RANGE);
+
+    /*
+     * Do the job.
+     */
+    if (pObj->enmType == RTFSISOMAKEROBJTYPE_FILE)
+    {
+        PRTFSISOMAKERFILE pFile = (PRTFSISOMAKERFILE)pObj;
+        if (pFile->enmSrcType != RTFSISOMAKERSRCTYPE_TRANS_TBL)
+        {
+            *pcbData = ((PRTFSISOMAKERFILE)pObj)->cbData;
+            return VINF_SUCCESS;
+        }
+    }
+    return VERR_WRONG_TYPE;
+}
+
+
+/**
  * Initalizes the common part of a file system object and links it into global
  * chain.
  *
@@ -2411,7 +2621,7 @@ static int rtFsIsoMakerInitCommonObj(PRTFSISOMAKERINT pThis, PRTFSISOMAKEROBJ pO
     pObj->pUdfName      = NULL;
     pObj->pHfsName      = NULL;
     pObj->idxObj        = pThis->cObjects++;
-    pObj->fNotOrphan    = false;
+    pObj->cNotOrphan    = 0;
     if (pObjInfo)
     {
         pObj->BirthTime         = pObjInfo->BirthTime;
@@ -2475,7 +2685,7 @@ static int rtFsIsoMakerAddUnnamedDirWorker(PRTFSISOMAKERINT pThis, PRTFSISOMAKER
 RTDECL(int) RTFsIsoMakerAddUnnamedDir(RTFSISOMAKER hIsoMaker, uint32_t *pidxObj)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertPtrReturn(pidxObj, VERR_INVALID_POINTER);
     AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
 
@@ -2500,7 +2710,7 @@ RTDECL(int) RTFsIsoMakerAddUnnamedDir(RTFSISOMAKER hIsoMaker, uint32_t *pidxObj)
 RTDECL(int) RTFsIsoMakerAddDir(RTFSISOMAKER hIsoMaker, const char *pszDir, uint32_t *pidxObj)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertPtrReturn(pszDir, VERR_INVALID_POINTER);
     AssertReturn(RTPATH_IS_SLASH(*pszDir), VERR_INVALID_NAME);
 
@@ -2526,6 +2736,7 @@ RTDECL(int) RTFsIsoMakerAddDir(RTFSISOMAKER hIsoMaker, const char *pszDir, uint3
  *
  * @returns IPRT status code.
  * @param   pThis               The ISO make instance.
+ * @param   pObjInfo            Object information.  Optional.
  * @param   cbExtra             Extra space for additional data (e.g. source
  *                              path string copy).
  * @param   ppFile              Where to return the file.
@@ -2543,6 +2754,7 @@ static int rtFsIsoMakerAddUnnamedFileWorker(PRTFSISOMAKERINT pThis, PCRTFSOBJINF
         pFile->offData      = UINT64_MAX;
         pFile->enmSrcType   = RTFSISOMAKERSRCTYPE_INVALID;
         pFile->u.pszSrcPath = NULL;
+        pFile->pBootInfoTable = NULL;
         RTListInit(&pFile->FinalizedEntry);
 
         *ppFile = pFile;
@@ -2569,7 +2781,7 @@ static int rtFsIsoMakerAddUnnamedFileWorker(PRTFSISOMAKERINT pThis, PCRTFSOBJINF
 RTDECL(int) RTFsIsoMakerAddUnnamedFileWithSrcPath(RTFSISOMAKER hIsoMaker, const char *pszSrcFile, uint32_t *pidxObj)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertPtrReturn(pidxObj, VERR_INVALID_POINTER);
     *pidxObj = UINT32_MAX;
     AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
@@ -2615,7 +2827,7 @@ RTDECL(int) RTFsIsoMakerAddUnnamedFileWithSrcPath(RTFSISOMAKER hIsoMaker, const 
 RTDECL(int) RTFsIsoMakerAddUnnamedFileWithVfsFile(RTFSISOMAKER hIsoMaker, RTVFSFILE hVfsFileSrc, uint32_t *pidxObj)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertPtrReturn(pidxObj, VERR_INVALID_POINTER);
     *pidxObj = UINT32_MAX;
     AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
@@ -2640,14 +2852,140 @@ RTDECL(int) RTFsIsoMakerAddUnnamedFileWithVfsFile(RTFSISOMAKER hIsoMaker, RTVFSF
     rc = rtFsIsoMakerAddUnnamedFileWorker(pThis, &ObjInfo, 0, &pFile);
     if (RT_SUCCESS(rc))
     {
-        pFile->enmSrcType = RTFSISOMAKERSRCTYPE_VFS_FILE;
-        pFile->u.hVfsFile = hVfsFileSrc;
+        pFile->enmSrcType   = RTFSISOMAKERSRCTYPE_VFS_FILE;
+        pFile->u.hVfsFile   = hVfsFileSrc;
 
         *pidxObj = pFile->Core.idxObj;
     }
     else
         RTVfsFileRelease(hVfsFileSrc);
     return rc;
+}
+
+
+/**
+ * Adds an unnamed file to the image that's backed by a portion of a common
+ * source file.
+ *
+ * The file must explictly be entered into the desired namespaces.
+ *
+ * @returns IPRT status code
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   idxCommonSrc        The common source file index.
+ * @param   offData             The offset of the data in the source file.
+ * @param   cbData              The file size.
+ * @param   pObjInfo            Pointer to file info.  Optional.
+ * @param   pidxObj             Where to return the configuration index of the
+ *                              directory.
+ * @sa      RTFsIsoMakerAddUnnamedFileWithSrcPath, RTFsIsoMakerObjSetPath
+ */
+RTDECL(int) RTFsIsoMakerAddUnnamedFileWithCommonSrc(RTFSISOMAKER hIsoMaker, uint32_t idxCommonSrc,
+                                                    uint64_t offData, uint64_t cbData, PCRTFSOBJINFO pObjInfo, uint32_t *pidxObj)
+{
+    /*
+     * Validate and fake input.
+     */
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+    AssertPtrReturn(pidxObj, VERR_INVALID_POINTER);
+    *pidxObj = UINT32_MAX;
+    AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
+    AssertReturn(idxCommonSrc < pThis->cCommonSources, VERR_INVALID_PARAMETER);
+    AssertReturn(offData < (uint64_t)RTFOFF_MAX, VERR_OUT_OF_RANGE);
+    AssertReturn(cbData < (uint64_t)RTFOFF_MAX, VERR_OUT_OF_RANGE);
+    AssertReturn(offData + cbData < (uint64_t)RTFOFF_MAX, VERR_OUT_OF_RANGE);
+    RTFSOBJINFO ObjInfo;
+    if (!pObjInfo)
+    {
+        ObjInfo.cbObject            = cbData;
+        ObjInfo.cbAllocated         = cbData;
+        ObjInfo.BirthTime           = pThis->ImageCreationTime;
+        ObjInfo.ChangeTime          = pThis->ImageCreationTime;
+        ObjInfo.ModificationTime    = pThis->ImageCreationTime;
+        ObjInfo.AccessTime          = pThis->ImageCreationTime;
+        ObjInfo.Attr.fMode          = pThis->fDefaultFileMode;
+        ObjInfo.Attr.enmAdditional  = RTFSOBJATTRADD_UNIX;
+        ObjInfo.Attr.u.Unix.uid             = NIL_RTUID;
+        ObjInfo.Attr.u.Unix.gid             = NIL_RTGID;
+        ObjInfo.Attr.u.Unix.cHardlinks      = 1;
+        ObjInfo.Attr.u.Unix.INodeIdDevice   = 0;
+        ObjInfo.Attr.u.Unix.INodeId         = 0;
+        ObjInfo.Attr.u.Unix.fFlags          = 0;
+        ObjInfo.Attr.u.Unix.GenerationId    = 0;
+        ObjInfo.Attr.u.Unix.Device          = 0;
+    }
+    else
+    {
+        AssertPtrReturn(pObjInfo, VERR_INVALID_POINTER);
+        AssertReturn(pObjInfo->Attr.enmAdditional == RTFSOBJATTRADD_UNIX, VERR_WRONG_TYPE);
+        AssertReturn((uint64_t)pObjInfo->cbObject == cbData, VERR_INVALID_PARAMETER);
+    }
+
+    /*
+     * Create a file object for it.
+     */
+    PRTFSISOMAKERFILE pFile;
+    int rc = rtFsIsoMakerAddUnnamedFileWorker(pThis, pObjInfo, 0, &pFile);
+    if (RT_SUCCESS(rc))
+    {
+        pFile->enmSrcType       = RTFSISOMAKERSRCTYPE_COMMON;
+        pFile->u.Common.idxSrc  = idxCommonSrc;
+        pFile->u.Common.offData = offData;
+
+        *pidxObj = pFile->Core.idxObj;
+    }
+    return rc;
+}
+
+
+/**
+ * Adds a common source file.
+ *
+ * Using RTFsIsoMakerAddUnnamedFileWithCommonSrc a sections common source file
+ * can be referenced to make up other files.  The typical use case is when
+ * importing data from an existing ISO.
+ *
+ * @returns IPRT status code
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   hVfsFile            VFS handle of the common source.  (A reference
+ *                              is added, none consumed.)
+ * @param   pidxCommonSrc       Where to return the assigned common source
+ *                              index.  This is used to reference the file.
+ * @sa      RTFsIsoMakerAddUnnamedFileWithCommonSrc
+ */
+RTDECL(int) RTFsIsoMakerAddCommonSourceFile(RTFSISOMAKER hIsoMaker, RTVFSFILE hVfsFile, uint32_t *pidxCommonSrc)
+{
+    /*
+     * Validate input.
+     */
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+    AssertPtrReturn(pidxCommonSrc, VERR_INVALID_POINTER);
+    *pidxCommonSrc = UINT32_MAX;
+    AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
+
+    /*
+     * Resize the common source array if necessary.
+     */
+    if ((pThis->cCommonSources & 15) == 0)
+    {
+        void *pvNew = RTMemRealloc(pThis->paCommonSources, (pThis->cCommonSources + 16) * sizeof(pThis->paCommonSources[0]));
+        AssertReturn(pvNew, VERR_NO_MEMORY);
+        pThis->paCommonSources = (PRTVFSFILE)pvNew;
+    }
+
+    /*
+     * Retain a reference to the source file, thereby validating the handle.
+     * Then add it to the array.
+     */
+    uint32_t cRefs = RTVfsFileRetain(hVfsFile);
+    AssertReturn(cRefs != UINT32_MAX, VERR_INVALID_HANDLE);
+
+    uint32_t idx = pThis->cCommonSources++;
+    pThis->paCommonSources[idx] = hVfsFile;
+
+    *pidxCommonSrc = idx;
+    return VINF_SUCCESS;
 }
 
 
@@ -2667,7 +3005,7 @@ RTDECL(int) RTFsIsoMakerAddUnnamedFileWithVfsFile(RTFSISOMAKER hIsoMaker, RTVFSF
 RTDECL(int) RTFsIsoMakerAddFileWithSrcPath(RTFSISOMAKER hIsoMaker, const char *pszFile, const char *pszSrcFile, uint32_t *pidxObj)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertPtrReturn(pszFile, VERR_INVALID_POINTER);
     AssertReturn(RTPATH_IS_SLASH(*pszFile), VERR_INVALID_NAME);
 
@@ -2704,7 +3042,7 @@ RTDECL(int) RTFsIsoMakerAddFileWithSrcPath(RTFSISOMAKER hIsoMaker, const char *p
 RTDECL(int) RTFsIsoMakerAddFileWithVfsFile(RTFSISOMAKER hIsoMaker, const char *pszFile, RTVFSFILE hVfsFileSrc, uint32_t *pidxObj)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertPtrReturn(pszFile, VERR_INVALID_POINTER);
     AssertReturn(RTPATH_IS_SLASH(*pszFile), VERR_INVALID_NAME);
 
@@ -2720,6 +3058,310 @@ RTDECL(int) RTFsIsoMakerAddFileWithVfsFile(RTFSISOMAKER hIsoMaker, const char *p
         }
         else
             RTFsIsoMakerObjRemove(hIsoMaker, idxObj);
+    }
+    return rc;
+}
+
+
+
+
+/*
+ *
+ * El Torito Booting.
+ * El Torito Booting.
+ * El Torito Booting.
+ * El Torito Booting.
+ *
+ */
+
+/**
+ * Ensures that we've got a boot catalog file.
+ *
+ * @returns IPRT status code.
+ * @param   pThis               The ISO maker instance.
+ */
+static int rtFsIsoMakerEnsureBootCatFile(PRTFSISOMAKERINT pThis)
+{
+    if (pThis->pBootCatFile)
+        return VINF_SUCCESS;
+
+    AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
+
+    /* Create a VFS memory file for backing up the file. */
+    RTVFSFILE hVfsFile;
+    int rc = RTVfsMemFileCreate(NIL_RTVFSIOSTREAM, RTFSISOMAKER_SECTOR_SIZE, &hVfsFile);
+    if (RT_SUCCESS(rc))
+    {
+        /* Create an unnamed VFS backed file and mark it as non-orphaned. */
+        PRTFSISOMAKERFILE pFile;
+        rc = rtFsIsoMakerAddUnnamedFileWorker(pThis, NULL, 0, &pFile);
+        if (RT_SUCCESS(rc))
+        {
+            pFile->enmSrcType       = RTFSISOMAKERSRCTYPE_VFS_FILE;
+            pFile->u.hVfsFile       = hVfsFile;
+            pFile->Core.cNotOrphan  = 1;
+
+            /* Save file pointer and allocate a volume descriptor. */
+            pThis->pBootCatFile = pFile;
+            pThis->cVolumeDescriptors++;
+
+            return VINF_SUCCESS;
+        }
+        RTVfsFileRelease(hVfsFile);
+    }
+    return rc;
+}
+
+
+/**
+ * Queries the configuration index of the boot catalog file object.
+ *
+ * The boot catalog file is created as necessary, thus this have to be a query
+ * rather than a getter since object creation may fail.
+ *
+ * @returns IPRT status code.
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   pidxObj             Where to return the configuration index.
+ */
+RTDECL(int) RTFsIsoMakerQueryObjIdxForBootCatalog(RTFSISOMAKER hIsoMaker, uint32_t *pidxObj)
+{
+    /*
+     * Validate input.
+     */
+    AssertPtrReturn(pidxObj, VERR_INVALID_POINTER);
+    *pidxObj = UINT32_MAX;
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+
+    /*
+     * Do the job.
+     */
+    int rc = rtFsIsoMakerEnsureBootCatFile(pThis);
+    if (RT_SUCCESS(rc))
+        *pidxObj = pThis->pBootCatFile->Core.idxObj;
+    return rc;
+}
+
+
+/**
+ * Set the validation entry of the boot catalog (this is the first entry).
+ *
+ * @returns IPRT status code.
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   idPlatform          The platform ID
+ *                              (ISO9660_ELTORITO_PLATFORM_ID_XXX).
+ * @param   pszString           CD/DVD-ROM identifier.  Optional.
+ */
+RTDECL(int) RTFsIsoMakerBootCatSetValidationEntry(RTFSISOMAKER hIsoMaker, uint8_t idPlatform, const char *pszString)
+{
+    /*
+     * Validate input.
+     */
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+    size_t cchString = 0;
+    if (pszString)
+    {
+        cchString = RTStrCalcLatin1Len(pszString);
+        AssertReturn(cchString < RT_SIZEOFMEMB(ISO9660ELTORITOVALIDATIONENTRY, achId), VERR_OUT_OF_RANGE);
+    }
+
+    /*
+     * Make sure we've got a boot file.
+     */
+    int rc = rtFsIsoMakerEnsureBootCatFile(pThis);
+    if (RT_SUCCESS(rc))
+    {
+        /*
+         * Construct the entry data.
+         */
+        ISO9660ELTORITOVALIDATIONENTRY Entry;
+        Entry.bHeaderId = ISO9660_ELTORITO_HEADER_ID_VALIDATION_ENTRY;
+        Entry.bPlatformId = idPlatform;
+        Entry.u16Reserved = 0;
+        RT_ZERO(Entry.achId);
+        if (cchString)
+        {
+            char *pszTmp = Entry.achId;
+            rc = RTStrToLatin1Ex(pszString, RTSTR_MAX, &pszTmp, sizeof(Entry.achId), NULL);
+            AssertRC(rc);
+        }
+        Entry.u16Checksum = 0;
+        Entry.bKey1 = ISO9660_ELTORITO_KEY_BYTE_1;
+        Entry.bKey2 = ISO9660_ELTORITO_KEY_BYTE_2;
+
+        /* Calc checksum. */
+        uint16_t uSum = 0;
+        uint16_t const *pu16Src = (uint16_t const *)&Entry;
+        uint16_t        cLeft   = sizeof(Entry) / sizeof(uint16_t);
+        while (cLeft-- > 0)
+        {
+            uSum += RT_LE2H_U16(*pu16Src);
+            pu16Src++;
+        }
+        Entry.u16Checksum = RT_H2LE_U16((uint16_t)0 - uSum);
+
+        /*
+         * Write the entry and update our internal tracker.
+         */
+        rc = RTVfsFileWriteAt(pThis->pBootCatFile->u.hVfsFile, 0, &Entry, sizeof(Entry), NULL);
+        if (RT_SUCCESS(rc))
+        {
+            pThis->aBootCatEntries[0].bType    = ISO9660_ELTORITO_HEADER_ID_VALIDATION_ENTRY;
+            pThis->aBootCatEntries[0].cEntries = 2;
+        }
+    }
+    return rc;
+}
+
+
+/**
+ * Set the validation entry of the boot catalog (this is the first entry).
+ *
+ * @returns IPRT status code.
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   idxBootCat          The boot catalog entry.  Zero and two are
+ *                              invalid.  Must be less than 63.
+ * @param   idxImageObj         The configuration index of the boot image.
+ * @param   bBootMediaType      The media type and flag (not for entry 1)
+ *                              (ISO9660_ELTORITO_BOOT_MEDIA_TYPE_XXX,
+ *                              ISO9660_ELTORITO_BOOT_MEDIA_F_XXX).
+ * @param   bSystemType         The partitiona table system ID.
+ * @param   fBootable           Whether it's a bootable entry or if we just want
+ *                              the BIOS to setup the emulation without booting
+ *                              it.
+ * @param   uLoadSeg            The load address divided by 0x10 (i.e. the real
+ *                              mode segment number).
+ * @param   cSectorsToLoad      Number of emulated sectors to load.
+ */
+RTDECL(int) RTFsIsoMakerBootCatSetSectionEntry(RTFSISOMAKER hIsoMaker, uint32_t idxBootCat, uint32_t idxImageObj,
+                                               uint8_t bBootMediaType, uint8_t bSystemType, bool fBootable,
+                                               uint16_t uLoadSeg, uint16_t cSectorsToLoad)
+{
+    /*
+     * Validate input.
+     */
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+    PRTFSISOMAKERFILE pFile = (PRTFSISOMAKERFILE)rtFsIsoMakerIndexToObj(pThis, idxImageObj);
+    AssertReturn(pFile, VERR_OUT_OF_RANGE);
+    AssertReturn((bBootMediaType & ISO9660_ELTORITO_BOOT_MEDIA_TYPE_MASK) <= ISO9660_ELTORITO_BOOT_MEDIA_TYPE_HARD_DISK,
+                 VERR_INVALID_PARAMETER);
+    AssertReturn(!(bBootMediaType & ISO9660_ELTORITO_BOOT_MEDIA_F_MASK) || idxBootCat != 1,
+                 VERR_INVALID_PARAMETER);
+
+    AssertReturn(idxBootCat != 0 && idxBootCat != 2 && idxBootCat < RT_ELEMENTS(pThis->aBootCatEntries) - 1U, VERR_OUT_OF_RANGE);
+
+    /*
+     * Make sure we've got a boot file.
+     */
+    int rc = rtFsIsoMakerEnsureBootCatFile(pThis);
+    if (RT_SUCCESS(rc))
+    {
+        /*
+         * Construct the entry.
+         */
+        ISO9660ELTORITOSECTIONENTRY Entry;
+        Entry.bBootIndicator            = fBootable ? ISO9660_ELTORITO_BOOT_INDICATOR_BOOTABLE
+                                        :             ISO9660_ELTORITO_BOOT_INDICATOR_NOT_BOOTABLE;
+        Entry.bBootMediaType            = bBootMediaType;
+        Entry.uLoadSeg                  = RT_H2LE_U16(uLoadSeg);
+        Entry.bSystemType               = bSystemType;
+        Entry.bUnused                   = 0;
+        Entry.cEmulatedSectorsToLoad    = RT_H2LE_U16(cSectorsToLoad);
+        Entry.offBootImage              = 0;
+        Entry.bSelectionCriteriaType    = ISO9660_ELTORITO_SEL_CRIT_TYPE_NONE;
+        RT_ZERO(Entry.abSelectionCriteria);
+
+        /*
+         * Write it and update our internal tracker.
+         */
+        rc = RTVfsFileWriteAt(pThis->pBootCatFile->u.hVfsFile, 32 * idxBootCat, &Entry, sizeof(Entry), NULL);
+        if (RT_SUCCESS(rc))
+        {
+            if (pThis->aBootCatEntries[idxBootCat].pBootFile != pFile)
+            {
+                if (pThis->aBootCatEntries[idxBootCat].pBootFile)
+                    pThis->aBootCatEntries[idxBootCat].pBootFile->Core.cNotOrphan--;
+                pFile->Core.cNotOrphan++;
+                pThis->aBootCatEntries[idxBootCat].pBootFile = pFile;
+            }
+
+            pThis->aBootCatEntries[idxBootCat].bType    = Entry.bBootIndicator;
+            pThis->aBootCatEntries[idxBootCat].cEntries = 1;
+        }
+    }
+    return rc;
+}
+
+
+/**
+ * Set the validation entry of the boot catalog (this is the first entry).
+ *
+ * @returns IPRT status code.
+ * @param   hIsoMaker           The ISO maker handle.
+ * @param   idxBootCat          The boot catalog entry.
+ * @param   cEntries            Number of entries in the section.
+ * @param   idPlatform          The platform ID
+ *                              (ISO9660_ELTORITO_PLATFORM_ID_XXX).
+ * @param   pszString           Section identifier or something.  Optional.
+ */
+RTDECL(int) RTFsIsoMakerBootCatSetSectionHeaderEntry(RTFSISOMAKER hIsoMaker, uint32_t idxBootCat, uint32_t cEntries,
+                                                     uint8_t idPlatform, const char *pszString)
+{
+    /*
+     * Validate input.
+     */
+    PRTFSISOMAKERINT pThis = hIsoMaker;
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
+
+    AssertReturn(idxBootCat >= 2 && idxBootCat < RT_ELEMENTS(pThis->aBootCatEntries) - 1U, VERR_OUT_OF_RANGE);
+    AssertReturn(cEntries < RT_ELEMENTS(pThis->aBootCatEntries) - 2U - 1U, VERR_OUT_OF_RANGE);
+    AssertReturn(idxBootCat + cEntries + 1 < RT_ELEMENTS(pThis->aBootCatEntries), VERR_OUT_OF_RANGE);
+
+    size_t cchString = 0;
+    if (pszString)
+    {
+        cchString = RTStrCalcLatin1Len(pszString);
+        AssertReturn(cchString < RT_SIZEOFMEMB(ISO9660ELTORITOVALIDATIONENTRY, achId), VERR_OUT_OF_RANGE);
+    }
+
+    /*
+     * Make sure we've got a boot file.
+     */
+    int rc = rtFsIsoMakerEnsureBootCatFile(pThis);
+    if (RT_SUCCESS(rc))
+    {
+        /*
+         * Construct the entry data.
+         */
+        ISO9660ELTORITOSECTIONHEADER Entry;
+        Entry.bHeaderId   = ISO9660_ELTORITO_HEADER_ID_SECTION_HEADER;
+        Entry.bPlatformId = idPlatform;
+        Entry.cEntries    = RT_H2LE_U16(cEntries);
+        RT_ZERO(Entry.achSectionId);
+        if (cchString)
+        {
+            char *pszTmp = Entry.achSectionId;
+            rc = RTStrToLatin1Ex(pszString, RTSTR_MAX, &pszTmp, sizeof(Entry.achSectionId), NULL);
+            AssertRC(rc);
+        }
+
+        /*
+         * Write the entry and update our internal tracker.
+         */
+        rc = RTVfsFileWriteAt(pThis->pBootCatFile->u.hVfsFile, 32 * idxBootCat, &Entry, sizeof(Entry), NULL);
+        if (RT_SUCCESS(rc))
+        {
+            if (pThis->aBootCatEntries[idxBootCat].pBootFile != NULL)
+            {
+                pThis->aBootCatEntries[idxBootCat].pBootFile->Core.cNotOrphan--;
+                pThis->aBootCatEntries[idxBootCat].pBootFile = NULL;
+            }
+
+            pThis->aBootCatEntries[idxBootCat].bType    = ISO9660_ELTORITO_HEADER_ID_SECTION_HEADER;
+            pThis->aBootCatEntries[idxBootCat].cEntries = cEntries + 1;
+        }
     }
     return rc;
 }
@@ -2756,7 +3398,7 @@ static int rtFsIsoMakerFinalizeRemoveOrphans(PRTFSISOMAKERINT pThis)
                 || pCur->pJolietName
                 || pCur->pUdfName
                 || pCur->pHfsName
-                || pCur->fNotOrphan)
+                || pCur->cNotOrphan > 0)
             { /* likely */ }
             else
             {
@@ -2774,18 +3416,132 @@ static int rtFsIsoMakerFinalizeRemoveOrphans(PRTFSISOMAKERINT pThis)
 
 
 /**
- * Finalizes the El Torito boot stuff.
+ * Finalizes the El Torito boot stuff, part 1.
  *
  * This includes generating the boot catalog data and fixing the location of all
  * related image files.
  *
  * @returns IPRT status code.
  * @param   pThis               The ISO maker instance.
- * @param   poffData            The data offset (in/out).
  */
-static int rtFsIsoMakerFinalizeBootStuff(PRTFSISOMAKERINT pThis, uint64_t *poffData)
+static int rtFsIsoMakerFinalizeBootStuffPart1(PRTFSISOMAKERINT pThis)
 {
-    RT_NOREF(pThis, poffData);
+    /*
+     * Anything?
+     */
+    if (!pThis->pBootCatFile)
+        return VINF_SUCCESS;
+
+    /*
+     * Validate the boot catalog file.
+     */
+    AssertReturn(pThis->aBootCatEntries[0].bType == ISO9660_ELTORITO_HEADER_ID_VALIDATION_ENTRY,
+                 VERR_ISOMK_BOOT_CAT_NO_VALIDATION_ENTRY);
+    AssertReturn(pThis->aBootCatEntries[1].pBootFile != NULL, VERR_ISOMK_BOOT_CAT_NO_DEFAULT_ENTRY);
+
+    /* Check any sections following the default one. */
+    uint32_t cEntries = 2;
+    while (   cEntries < RT_ELEMENTS(pThis->aBootCatEntries) - 1U
+           && pThis->aBootCatEntries[cEntries].cEntries > 0)
+    {
+        AssertReturn(pThis->aBootCatEntries[cEntries].bType == ISO9660_ELTORITO_HEADER_ID_SECTION_HEADER,
+                     VERR_ISOMK_BOOT_CAT_EXPECTED_SECTION_HEADER);
+        for (uint32_t i = 1; i < pThis->aBootCatEntries[cEntries].cEntries; i++)
+            AssertReturn(pThis->aBootCatEntries[cEntries].pBootFile != NULL,
+                         pThis->aBootCatEntries[cEntries].cEntries == 0
+                         ? VERR_ISOMK_BOOT_CAT_EMPTY_ENTRY : VERR_ISOMK_BOOT_CAT_INVALID_SECTION_SIZE);
+        cEntries += pThis->aBootCatEntries[cEntries].cEntries;
+    }
+
+    /* Save for size setting. */
+    uint32_t const cEntriesInFile = cEntries + 1;
+
+    /* Check that the remaining entries are empty. */
+    while (cEntries < RT_ELEMENTS(pThis->aBootCatEntries))
+    {
+        AssertReturn(pThis->aBootCatEntries[cEntries].cEntries == 0, VERR_ISOMK_BOOT_CAT_ERRATIC_ENTRY);
+        cEntries++;
+    }
+
+    /*
+     * Fixate the size of the boot catalog file.
+     */
+    pThis->pBootCatFile->cbData = cEntriesInFile * 32;
+    pThis->cbData  += RT_ALIGN_32(cEntriesInFile * 32, RTFSISOMAKER_SECTOR_SIZE);
+
+    /*
+     * Move up the boot images and boot catalog to the start of the image.
+     */
+    for (uint32_t i = RT_ELEMENTS(pThis->aBootCatEntries) - 2; i > 0; i--)
+        if (pThis->aBootCatEntries[i].pBootFile)
+        {
+            RTListNodeRemove(&pThis->aBootCatEntries[i].pBootFile->Core.Entry);
+            RTListPrepend(&pThis->ObjectHead, &pThis->aBootCatEntries[i].pBootFile->Core.Entry);
+        }
+
+    /* The boot catalog comes first. */
+    RTListNodeRemove(&pThis->pBootCatFile->Core.Entry);
+    RTListPrepend(&pThis->ObjectHead, &pThis->pBootCatFile->Core.Entry);
+
+    return VINF_SUCCESS;
+}
+
+
+/**
+ * Finalizes the El Torito boot stuff, part 1.
+ *
+ * This includes generating the boot catalog data and fixing the location of all
+ * related image files.
+ *
+ * @returns IPRT status code.
+ * @param   pThis               The ISO maker instance.
+ */
+static int rtFsIsoMakerFinalizeBootStuffPart2(PRTFSISOMAKERINT pThis)
+{
+    /*
+     * Anything?
+     */
+    if (!pThis->pBootCatFile)
+        return VINF_SUCCESS;
+
+    /*
+     * Fill in the descriptor.
+     */
+    PISO9660BOOTRECORDELTORITO pDesc = pThis->pElToritoDesc;
+    pDesc->Hdr.bDescType    = ISO9660VOLDESC_TYPE_BOOT_RECORD;
+    pDesc->Hdr.bDescVersion = ISO9660PRIMARYVOLDESC_VERSION;
+    memcpy(pDesc->Hdr.achStdId, ISO9660VOLDESC_STD_ID, sizeof(pDesc->Hdr.achStdId));
+    memcpy(pDesc->achBootSystemId, RT_STR_TUPLE(ISO9660BOOTRECORDELTORITO_BOOT_SYSTEM_ID));
+    pDesc->offBootCatalog   = RT_H2LE_U32((uint32_t)(pThis->pBootCatFile->offData / RTFSISOMAKER_SECTOR_SIZE));
+
+    /*
+     * Update the image file locations.
+     */
+    uint32_t cEntries = 2;
+    for (uint32_t i = 1; i < RT_ELEMENTS(pThis->aBootCatEntries) - 1; i++)
+        if (pThis->aBootCatEntries[i].pBootFile)
+        {
+            uint32_t off = pThis->aBootCatEntries[i].pBootFile->offData / RTFSISOMAKER_SECTOR_SIZE;
+            off = RT_H2LE_U32(off);
+            int rc = RTVfsFileWriteAt(pThis->pBootCatFile->u.hVfsFile,
+                                      i * 32 + RT_UOFFSETOF(ISO9660ELTORITOSECTIONENTRY, offBootImage),
+                                      &off, sizeof(off), NULL /*pcbWritten*/);
+            AssertRCReturn(rc, rc);
+            if (i == cEntries)
+                cEntries = i + 1;
+        }
+
+    /*
+     * Write end section.
+     */
+    ISO9660ELTORITOSECTIONHEADER Entry;
+    Entry.bHeaderId   = ISO9660_ELTORITO_HEADER_ID_FINAL_SECTION_HEADER;
+    Entry.bPlatformId = ISO9660_ELTORITO_PLATFORM_ID_X86;
+    Entry.cEntries    = 0;
+    RT_ZERO(Entry.achSectionId);
+    int rc = RTVfsFileWriteAt(pThis->pBootCatFile->u.hVfsFile, cEntries * 32, &Entry, sizeof(Entry), NULL /*pcbWritten*/);
+    AssertRCReturn(rc, rc);
+
     return VINF_SUCCESS;
 }
 
@@ -2902,7 +3658,7 @@ static int rtFsIsoMakerFinalizeDirectoriesInIsoNamespace(PRTFSISOMAKERINT pThis,
     }
 
     int      rc;
-    uint16_t idPathTable = 0;
+    uint16_t idPathTable = 1;
     uint32_t cbPathTable = 0;
     if (pNamespace->pRoot)
     {
@@ -2957,7 +3713,10 @@ static int rtFsIsoMakerFinalizeDirectoriesInIsoNamespace(PRTFSISOMAKERINT pThis,
 
             /* Set the translation table file size. */
             if (pCurDir->pTransTblFile)
+            {
                 pCurDir->pTransTblFile->cbData = cbTransTbl;
+                pThis->cbData += RT_ALIGN_32(cbTransTbl, RTFSISOMAKER_SECTOR_SIZE);
+            }
 
             /* Add to the path table size calculation. */
             pCurDir->offPathTable = cbPathTable;
@@ -3055,6 +3814,79 @@ static int rtFsIsoMakerFinalizeData(PRTFSISOMAKERINT pThis, uint64_t *poffData)
                 pCurFile->offData = *poffData;
                 *poffData += RT_ALIGN_64(pCurFile->cbData, RTFSISOMAKER_SECTOR_SIZE);
                 RTListAppend(&pThis->FinalizedFiles, &pCurFile->FinalizedEntry);
+            }
+
+            /*
+             * Create the boot info table.
+             */
+            if (pCurFile->pBootInfoTable)
+            {
+                /*
+                 * Checksum the file.
+                 */
+                int rc;
+                RTVFSFILE hVfsFile;
+                uint64_t  offBase;
+                switch (pCurFile->enmSrcType)
+                {
+                    case RTFSISOMAKERSRCTYPE_PATH:
+                        rc = RTVfsChainOpenFile(pCurFile->u.pszSrcPath, RTFILE_O_READ | RTFILE_O_DENY_NONE | RTFILE_O_OPEN,
+                                                &hVfsFile, NULL, NULL);
+                        AssertMsgRCReturn(rc, ("%s -> %Rrc\n", pCurFile->u.pszSrcPath, rc), rc);
+                        offBase = 0;
+                        break;
+                    case RTFSISOMAKERSRCTYPE_VFS_FILE:
+                        hVfsFile = pCurFile->u.hVfsFile;
+                        offBase = 0;
+                        rc = VINF_SUCCESS;
+                        break;
+                    case RTFSISOMAKERSRCTYPE_COMMON:
+                        hVfsFile = pThis->paCommonSources[pCurFile->u.Common.idxSrc];
+                        offBase  = pCurFile->u.Common.offData;
+                        rc = VINF_SUCCESS;
+                        break;
+                    default:
+                        AssertMsgFailedReturn(("enmSrcType=%d\n", pCurFile->enmSrcType), VERR_INTERNAL_ERROR_3);
+                }
+
+                uint32_t uChecksum = 0;
+                uint32_t off       = 64;
+                uint32_t cbLeft    = RT_MAX(64, (uint32_t)pCurFile->cbData) - 64;
+                while (cbLeft > 0)
+                {
+                    union
+                    {
+                        uint8_t     ab[_16K];
+                        uint32_t    au32[_16K / sizeof(uint32_t)];
+                    }        uBuf;
+                    uint32_t cbRead = RT_MIN(sizeof(uBuf), cbLeft);
+                    if (cbRead & 3)
+                        RT_ZERO(uBuf);
+                    rc = RTVfsFileReadAt(hVfsFile, offBase + off, &uBuf, cbRead, NULL);
+                    if (RT_FAILURE(rc))
+                        break;
+
+                    size_t i = RT_ALIGN_Z(cbRead, sizeof(uint32_t)) / sizeof(uint32_t);
+                    while (i-- > 0)
+                        uChecksum += RT_LE2H_U32(uBuf.au32[i]);
+
+                    off    += cbRead;
+                    cbLeft -= cbRead;
+                }
+
+                if (pCurFile->enmSrcType == RTFSISOMAKERSRCTYPE_PATH)
+                    RTVfsFileRelease(hVfsFile);
+                if (RT_FAILURE(rc))
+                    return rc;
+
+                /*
+                 * Populate the structure.
+                 */
+                pCurFile->pBootInfoTable->offPrimaryVolDesc = RT_H2LE_U32(16 * RTFSISOMAKER_SECTOR_SIZE);
+                pCurFile->pBootInfoTable->offBootFile       = RT_H2LE_U32((uint32_t)(pCurFile->offData / RTFSISOMAKER_SECTOR_SIZE));
+                pCurFile->pBootInfoTable->cbBootFile        = RT_H2LE_U32((uint32_t)pCurFile->cbData);
+                pCurFile->pBootInfoTable->uChecksum         = RT_H2LE_U32(uChecksum);
+                RT_ZERO(pCurFile->pBootInfoTable->auReserved);
             }
         }
     }
@@ -3191,8 +4023,9 @@ static void rtFsIsoMakerTimespecToIso9660RecTimestamp(PCRTTIMESPEC pTime, PISO96
 /**
  * Allocate and prepare the volume descriptors.
  *
- * What's not done here gets done later by rtFsIsoMakerFinalizeBootStuff, or at
- * teh very end of the finalization by rtFsIsoMakerFinalizeVolumeDescriptors.
+ * What's not done here gets done later by rtFsIsoMakerFinalizeBootStuffPart2,
+ * or at teh very end of the finalization by
+ * rtFsIsoMakerFinalizeVolumeDescriptors.
  *
  * @returns IPRT status code
  * @param   pThis               The ISO maker instance.
@@ -3211,11 +4044,11 @@ static int rtFsIsoMakerFinalizePrepVolumeDescriptors(PRTFSISOMAKERINT pThis)
     pThis->pPrimaryVolDesc = (PISO9660PRIMARYVOLDESC)&pThis->pbVolDescs[offVolDescs];
     offVolDescs += RTFSISOMAKER_SECTOR_SIZE;
 
-    if (true)
+    if (!pThis->pBootCatFile)
         pThis->pElToritoDesc = NULL;
     else
     {
-        pThis->pElToritoDesc = (PISO9660BOOTRECORD)&pThis->pbVolDescs[offVolDescs];
+        pThis->pElToritoDesc = (PISO9660BOOTRECORDELTORITO)&pThis->pbVolDescs[offVolDescs];
         offVolDescs += RTFSISOMAKER_SECTOR_SIZE;
     }
 
@@ -3381,8 +4214,8 @@ static int rtFsIsoMakerFinalizeVolumeDescriptors(PRTFSISOMAKERINT pThis)
     pPrimary->VolumeSpaceSize.le        = RT_H2LE_U32(pThis->cbFinalizedImage / RTFSISOMAKER_SECTOR_SIZE);
     pPrimary->cbPathTable.be            = RT_H2BE_U32(pThis->PrimaryIsoDirs.cbPathTable);
     pPrimary->cbPathTable.le            = RT_H2LE_U32(pThis->PrimaryIsoDirs.cbPathTable);
-    pPrimary->offTypeLPathTable         = RT_H2LE_U32(pThis->PrimaryIsoDirs.offPathTableL);
-    pPrimary->offTypeMPathTable         = RT_H2BE_U32(pThis->PrimaryIsoDirs.offPathTableM);
+    pPrimary->offTypeLPathTable         = RT_H2LE_U32(pThis->PrimaryIsoDirs.offPathTableL / RTFSISOMAKER_SECTOR_SIZE);
+    pPrimary->offTypeMPathTable         = RT_H2BE_U32(pThis->PrimaryIsoDirs.offPathTableM / RTFSISOMAKER_SECTOR_SIZE);
     pPrimary->RootDir.DirRec.cbDirRec           = sizeof(pPrimary->RootDir);
     pPrimary->RootDir.DirRec.cExtAttrBlocks     = 0;
     pPrimary->RootDir.DirRec.offExtent.be       = RT_H2BE_U32(pThis->PrimaryIso.pRoot->pDir->offDir / RTFSISOMAKER_SECTOR_SIZE);
@@ -3407,8 +4240,8 @@ static int rtFsIsoMakerFinalizeVolumeDescriptors(PRTFSISOMAKERINT pThis)
         pJoliet->VolumeSpaceSize            = pPrimary->VolumeSpaceSize;
         pJoliet->cbPathTable.be             = RT_H2BE_U32(pThis->JolietDirs.cbPathTable);
         pJoliet->cbPathTable.le             = RT_H2LE_U32(pThis->JolietDirs.cbPathTable);
-        pJoliet->offTypeLPathTable          = RT_H2LE_U32(pThis->JolietDirs.offPathTableL);
-        pJoliet->offTypeMPathTable          = RT_H2BE_U32(pThis->JolietDirs.offPathTableM);
+        pJoliet->offTypeLPathTable          = RT_H2LE_U32(pThis->JolietDirs.offPathTableL / RTFSISOMAKER_SECTOR_SIZE);
+        pJoliet->offTypeMPathTable          = RT_H2BE_U32(pThis->JolietDirs.offPathTableM / RTFSISOMAKER_SECTOR_SIZE);
         pJoliet->RootDir.DirRec.cbDirRec           = sizeof(pJoliet->RootDir);
         pJoliet->RootDir.DirRec.cExtAttrBlocks     = 0;
         pJoliet->RootDir.DirRec.offExtent.be       = RT_H2BE_U32(pThis->Joliet.pRoot->pDir->offDir / RTFSISOMAKER_SECTOR_SIZE);
@@ -3438,7 +4271,7 @@ static int rtFsIsoMakerFinalizeVolumeDescriptors(PRTFSISOMAKERINT pThis)
 RTDECL(int) RTFsIsoMakerFinalize(RTFSISOMAKER hIsoMaker)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(!pThis->fFinalized, VERR_WRONG_ORDER);
 
     /*
@@ -3460,7 +4293,7 @@ RTDECL(int) RTFsIsoMakerFinalize(RTFSISOMAKER hIsoMaker)
      * the descriptors.
      */
     uint64_t offData = _32K + pThis->cVolumeDescriptors * RTFSISOMAKER_SECTOR_SIZE;
-    rc = rtFsIsoMakerFinalizeBootStuff(pThis, &offData);
+    rc = rtFsIsoMakerFinalizeBootStuffPart1(pThis);
     if (RT_SUCCESS(rc))
     {
         /*
@@ -3478,14 +4311,21 @@ RTDECL(int) RTFsIsoMakerFinalize(RTFSISOMAKER hIsoMaker)
                 pThis->cbFinalizedImage = offData;
 
                 /*
-                 * Finally, finalize the volume descriptors as they depend on some of the
-                 * block allocations done in the previous steps.
+                 * Do a 2nd pass over the boot stuff to finalize locations.
                  */
-                rc = rtFsIsoMakerFinalizeVolumeDescriptors(pThis);
+                rc = rtFsIsoMakerFinalizeBootStuffPart2(pThis);
                 if (RT_SUCCESS(rc))
                 {
-                    pThis->fFinalized = true;
-                    return VINF_SUCCESS;
+                    /*
+                     * Finally, finalize the volume descriptors as they depend on some of the
+                     * block allocations done in the previous steps.
+                     */
+                    rc = rtFsIsoMakerFinalizeVolumeDescriptors(pThis);
+                    if (RT_SUCCESS(rc))
+                    {
+                        pThis->fFinalized = true;
+                        return VINF_SUCCESS;
+                    }
                 }
             }
         }
@@ -3600,7 +4440,7 @@ static int rtFsIsoMakerOutFile_ProduceTransTbl(PRTFSISOMAKEROUTPUTFILE pThis, PR
     while (cLeft-- > 0)
     {
         PRTFSISOMAKERNAME pChild = *ppChild++;
-        if (pChild->pszTransNm)
+        if (pChild->cchTransNm)
         {
             /** @todo TRANS.TBL codeset, currently using UTF-8 which is probably not it.
              *        However, nobody uses this stuff any more, so who cares. */
@@ -3664,14 +4504,14 @@ static int rtFsIsoMakerOutFile_ReadFileData(PRTFSISOMAKEROUTPUTFILE pThis, PRTFS
     }
     if ((offInFile = offUnsigned - pFile->offData) < RT_ALIGN_64(pFile->cbData, RTFSISOMAKER_SECTOR_SIZE))
     { /* hit */ }
-    else if (offUnsigned > pFile->offData)
+    else if (offUnsigned >= pFile->offData)
     {
         /* Seek forwards. */
         do
         {
             pFile = RTListGetNext(&pIsoMaker->FinalizedFiles, pFile, RTFSISOMAKERFILE, FinalizedEntry);
             AssertReturn(pFile, VERR_INTERNAL_ERROR_3);
-        } while ((offInFile = offUnsigned - pFile->offData) < RT_ALIGN_64(pFile->cbData, RTFSISOMAKER_SECTOR_SIZE));
+        } while ((offInFile = offUnsigned - pFile->offData) >= RT_ALIGN_64(pFile->cbData, RTFSISOMAKER_SECTOR_SIZE));
     }
     else
     {
@@ -3680,7 +4520,7 @@ static int rtFsIsoMakerOutFile_ReadFileData(PRTFSISOMAKEROUTPUTFILE pThis, PRTFS
         {
             pFile = RTListGetPrev(&pIsoMaker->FinalizedFiles, pFile, RTFSISOMAKERFILE, FinalizedEntry);
             AssertReturn(pFile, VERR_INTERNAL_ERROR_3);
-        } while ((offInFile = offUnsigned - pFile->offData) < RT_ALIGN_64(pFile->cbData, RTFSISOMAKER_SECTOR_SIZE));
+        } while ((offInFile = offUnsigned - pFile->offData) >= RT_ALIGN_64(pFile->cbData, RTFSISOMAKER_SECTOR_SIZE));
     }
 
     /*
@@ -3701,8 +4541,9 @@ static int rtFsIsoMakerOutFile_ReadFileData(PRTFSISOMAKEROUTPUTFILE pThis, PRTFS
      */
     if (offInFile < pFile->cbData)
     {
-        int rc;
+        int    rc;
         size_t cbToRead = RT_MIN(cbBuf, pFile->cbData - offInFile);
+
         switch (pFile->enmSrcType)
         {
             case RTFSISOMAKERSRCTYPE_PATH:
@@ -3710,24 +4551,31 @@ static int rtFsIsoMakerOutFile_ReadFileData(PRTFSISOMAKEROUTPUTFILE pThis, PRTFS
                 {
                     rc = RTVfsChainOpenFile(pFile->u.pszSrcPath, RTFILE_O_READ | RTFILE_O_DENY_NONE | RTFILE_O_OPEN,
                                             &pThis->hVfsSrcFile, NULL, NULL);
-                    if (RT_FAILURE(rc))
-                        return rc;
+                    AssertMsgRCReturn(rc, ("%s -> %Rrc\n", pFile->u.pszSrcPath, rc), rc);
                 }
                 rc = RTVfsFileReadAt(pThis->hVfsSrcFile, offInFile, pbBuf, cbToRead, NULL);
+                AssertRC(rc);
                 break;
 
             case RTFSISOMAKERSRCTYPE_VFS_FILE:
                 rc = RTVfsFileReadAt(pFile->u.hVfsFile, offInFile, pbBuf, cbToRead, NULL);
+                AssertRC(rc);
+                break;
+
+            case RTFSISOMAKERSRCTYPE_COMMON:
+                rc = RTVfsFileReadAt(pIsoMaker->paCommonSources[pFile->u.Common.idxSrc],
+                                     pFile->u.Common.offData + offInFile, pbBuf, cbToRead, NULL);
+                AssertRC(rc);
                 break;
 
             case RTFSISOMAKERSRCTYPE_TRANS_TBL:
                 if (pThis->hVfsSrcFile == NIL_RTVFSFILE)
                 {
                     rc = rtFsIsoMakerOutFile_ProduceTransTbl(pThis, pFile);
-                    if (RT_FAILURE(rc))
-                        return rc;
+                    AssertRCReturn(rc, rc);
                 }
-                rc = RTVfsFileReadAt(pFile->u.hVfsFile, offInFile, pbBuf, cbToRead, NULL);
+                rc = RTVfsFileReadAt(pThis->hVfsSrcFile, offInFile, pbBuf, cbToRead, NULL);
+                AssertRC(rc);
                 break;
 
             default:
@@ -3738,9 +4586,23 @@ static int rtFsIsoMakerOutFile_ReadFileData(PRTFSISOMAKEROUTPUTFILE pThis, PRTFS
         *pcbDone = cbToRead;
 
         /*
+         * Do boot info table patching.
+         */
+        if (   pFile->pBootInfoTable
+            && offInFile            < 64
+            && offInFile + cbToRead > 8)
+        {
+            size_t offInBuf = offInFile <  8 ? 8 - (size_t)offInFile : 0;
+            size_t offInTab = offInFile <= 8 ? 0 : (size_t)offInFile - 8;
+            size_t cbToCopy = RT_MIN(sizeof(*pFile->pBootInfoTable) - offInTab, cbToRead - offInBuf);
+            memcpy(&pbBuf[offInBuf], (uint8_t *)pFile->pBootInfoTable + offInTab, cbToCopy);
+        }
+
+        /*
          * Check if we're into the zero padding at the end of the file now.
          */
         if (   cbToRead < cbBuf
+            && (pFile->cbData & RTFSISOMAKER_SECTOR_OFFSET_MASK)
             && offInFile + cbToRead == pFile->cbData)
         {
             cbBuf -= cbToRead;
@@ -3779,12 +4641,12 @@ static uint32_t rtFsIsoMakerOutFile_GeneratePathRec(PRTFSISOMAKERNAME pName, boo
     if (fLittleEndian)
     {
         pPathRec->offExtent   = RT_H2LE_U32(pName->pDir->offDir / RTFSISOMAKER_SECTOR_SIZE);
-        pPathRec->idParentRec = RT_H2LE_U16(pName->pParent ? pName->pParent->pDir->idPathTable : 0);
+        pPathRec->idParentRec = RT_H2LE_U16(pName->pParent ? pName->pParent->pDir->idPathTable : 1);
     }
     else
     {
         pPathRec->offExtent   = RT_H2BE_U32(pName->pDir->offDir / RTFSISOMAKER_SECTOR_SIZE);
-        pPathRec->idParentRec = RT_H2BE_U16(pName->pParent ? pName->pParent->pDir->idPathTable : 0);
+        pPathRec->idParentRec = RT_H2BE_U16(pName->pParent ? pName->pParent->pDir->idPathTable : 1);
     }
     if (!fUnicode)
     {
@@ -3799,7 +4661,9 @@ static uint32_t rtFsIsoMakerOutFile_GeneratePathRec(PRTFSISOMAKERNAME pName, boo
         size_t   cwcResult = 0;
         int rc = RTStrToUtf16BigEx(pName->szName, RTSTR_MAX, &pwszTmp, pName->cbNameInDirRec / sizeof(RTUTF16) + 1, &cwcResult);
         AssertRC(rc);
-        Assert(cwcResult * sizeof(RTUTF16) == pName->cbNameInDirRec);
+        Assert(   cwcResult * sizeof(RTUTF16) == pName->cbNameInDirRec
+               || (!pName->pParent && cwcResult == 0 && pName->cbNameInDirRec == 1) );
+
     }
     return RTFSISOMAKER_CALC_PATHREC_SIZE(pName->cbNameInDirRec);
 }
@@ -3920,7 +4784,7 @@ static size_t rtFsIsoMakerOutFile_ReadPathTable(PRTFSISOMAKERNAMEDIR *ppDirHint,
  * @returns Number of bytes copied into the buffer.
  * @param   pName       The namespace node.
  * @param   fUnicode    Set if the name should be translated to big endian
- *                      UTF-16 / UCS-2, i.e. we're in the joliet namespace.
+ *                      UTF-16BE / UCS-2BE, i.e. we're in the joliet namespace.
  * @param   pbBuf       The buffer.  This is at least pName->cbDirRec bytes big.
  */
 static uint32_t rtFsIsoMakerOutFile_GenerateDirRec(PRTFSISOMAKERNAME pName, bool fUnicode, uint8_t *pbBuf)
@@ -3981,7 +4845,8 @@ static uint32_t rtFsIsoMakerOutFile_GenerateDirRec(PRTFSISOMAKERNAME pName, bool
         size_t   cwcResult = 0;
         int rc = RTStrToUtf16BigEx(pName->szName, RTSTR_MAX, &pwszTmp, RT_ELEMENTS(wszTmp), &cwcResult);
         AssertRC(rc);
-        Assert(cwcResult * sizeof(RTUTF16) == pName->cbNameInDirRec);
+        Assert(   cwcResult * sizeof(RTUTF16) == pName->cbNameInDirRec
+               || (!pName->pParent && cwcResult == 0 && pName->cbNameInDirRec == 1) );
         memcpy(&pDirRec->achFileId[0], pwszTmp, pName->cbNameInDirRec);
         pDirRec->achFileId[pName->cbNameInDirRec] = '\0';
     }
@@ -4586,7 +5451,7 @@ DECL_HIDDEN_CONST(const RTVFSFILEOPS) g_rtFsIsoMakerOutputFileOps =
 RTDECL(int) RTFsIsoMakerCreateVfsOutputFile(RTFSISOMAKER hIsoMaker, PRTVFSFILE phVfsFile)
 {
     PRTFSISOMAKERINT pThis = hIsoMaker;
-    RTFSISOMAKER_ASSER_VALID_HANDLE_RET(pThis);
+    RTFSISOMAKER_ASSERT_VALID_HANDLE_RET(pThis);
     AssertReturn(pThis->fFinalized, VERR_WRONG_ORDER);
     AssertPtrReturn(phVfsFile, VERR_INVALID_POINTER);
 

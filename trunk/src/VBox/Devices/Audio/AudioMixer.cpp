@@ -813,7 +813,7 @@ static void audioMixerSinkDestroyInternal(PAUDMIXSINK pSink)
  * to AudioMixerSinkUpdate().
  *
  * @returns Amount of bytes ready to be read from the sink.
- * @param   pSink               Sink to return number of available samples for.
+ * @param   pSink               Sink to return number of available bytes for.
  */
 uint32_t AudioMixerSinkGetReadable(PAUDMIXSINK pSink)
 {
@@ -825,23 +825,27 @@ uint32_t AudioMixerSinkGetReadable(PAUDMIXSINK pSink)
     if (RT_FAILURE(rc))
         return 0;
 
-    uint32_t cbReadable;
+    uint32_t cbReadable = 0;
 
 #ifdef VBOX_AUDIO_MIXER_WITH_MIXBUF
 # error "Implement me!"
 #else
-    /* Get the time delta and calculate the bytes that need to be processed.
-     *
-     * Example for 16 bit, 44.1KhZ, stereo:
-     * 16 bits per sample x 44.100 samples per second = 705.600 bits per second x 2 channels
-     *     = 1.411.200 bits per second of stereo.
-     */
-    uint64_t tsDeltaMS  = RTTimeMilliTS() - pSink->tsLastUpdatedMS;
+    /* The hosts sets the pace --
+     * so we try to find the maximum of readable data of all connected streams to this sink. */
+    PAUDMIXSTREAM pMixStream;
+    RTListForEach(&pSink->lstStreams, pMixStream, AUDMIXSTREAM, Node)
+    {
+        if (!(pMixStream->pConn->pfnStreamGetStatus(pMixStream->pConn, pMixStream->pStream) & PDMAUDIOSTRMSTS_FLAG_ENABLED))
+        {
+            Log3Func(("[%s] Stream '%s' disabled, skipping ...\n", pSink->pszName, pMixStream->pszName));
+            continue;
+        }
 
-    cbReadable = ((DrvAudioHlpCalcBitrate(&pSink->PCMProps) / 8) / 1000 /* s to ms */) * tsDeltaMS;
+        cbReadable = RT_MAX(cbReadable,
+                            pMixStream->pConn->pfnStreamGetReadable(pMixStream->pConn, pMixStream->pStream));
 
-    Log3Func(("[%s] Bitrate is %RU32 bytes/s -> %RU64ms / %RU32 bytes elapsed\n",
-              pSink->pszName, DrvAudioHlpCalcBitrate(&pSink->PCMProps) / 8, tsDeltaMS, cbReadable));
+        break; /** @todo For now we only support recording by the first stream added. */
+    }
 #endif
 
     Log3Func(("[%s] cbReadable=%RU32\n", pSink->pszName, cbReadable));
@@ -857,7 +861,7 @@ uint32_t AudioMixerSinkGetReadable(PAUDMIXSINK pSink)
  * to AudioMixerSinkUpdate().
  *
  * @returns Amount of bytes ready to be written to the sink.
- * @param   pSink               Sink to return number of available samples for.
+ * @param   pSink               Sink to return number of available bytes for.
  */
 uint32_t AudioMixerSinkGetWritable(PAUDMIXSINK pSink)
 {
@@ -869,30 +873,32 @@ uint32_t AudioMixerSinkGetWritable(PAUDMIXSINK pSink)
     if (RT_FAILURE(rc))
         return 0;
 
-    uint32_t cbWritable;
+    uint32_t cbWritable = 0;
 
-    if (   !(pSink->fStatus & AUDMIXSINK_STS_RUNNING)
-        || pSink->fStatus & AUDMIXSINK_STS_PENDING_DISABLE)
-    {
-        cbWritable = 0;
-    }
-    else
+    if (    (pSink->fStatus & AUDMIXSINK_STS_RUNNING)
+        && !(pSink->fStatus & AUDMIXSINK_STS_PENDING_DISABLE))
     {
 #ifdef VBOX_AUDIO_MIXER_WITH_MIXBUF
 # error "Implement me!"
 #else
-        /* Get the time delta and calculate the bytes that need to be processed.
-         *
-         * Example for 16 bit, 44.1KhZ, stereo:
-         * 16 bits per sample x 44.100 samples per second = 705.600 bits per second x 2 channels
-         *     = 1.411.200 bits per second of stereo.
-         */
-        uint64_t tsDeltaMS  = RTTimeMilliTS() - pSink->tsLastUpdatedMS;
+        /* The hosts sets the pace --
+         * so we try to find the minimum of writable data to all connected streams to this sink. */
+        PAUDMIXSTREAM pMixStream;
+        RTListForEach(&pSink->lstStreams, pMixStream, AUDMIXSTREAM, Node)
+        {
+            if (!(pMixStream->pConn->pfnStreamGetStatus(pMixStream->pConn, pMixStream->pStream) & PDMAUDIOSTRMSTS_FLAG_ENABLED))
+            {
+                Log3Func(("[%s] Stream '%s' disabled, skipping ...\n", pSink->pszName, pMixStream->pszName));
+                continue;
+            }
 
-        cbWritable = ((DrvAudioHlpCalcBitrate(&pSink->PCMProps) / 8) / 1000 /* s to ms */) * tsDeltaMS;
+            const uint32_t cbWritableStream = pMixStream->pConn->pfnStreamGetWritable(pMixStream->pConn, pMixStream->pStream);
 
-        Log3Func(("[%s] Bitrate is %RU32 bytes/s -> %RU64ms / %RU32 bytes elapsed\n",
-                  pSink->pszName, DrvAudioHlpCalcBitrate(&pSink->PCMProps) / 8, tsDeltaMS, cbWritable));
+            if (cbWritable < cbWritableStream)
+                cbWritable = cbWritableStream;
+
+            break; /** @todo For now the first stream sets the pace. */
+        }
 #endif
     }
 
@@ -1431,14 +1437,14 @@ static int audioMixerSinkUpdateInternal(PAUDMIXSINK pSink)
         PPDMIAUDIOCONNECTOR pConn = pMixStream->pConn;
         AssertPtr(pConn);
 
-        uint32_t cProc = 0;
+        uint32_t csProc = 0;
 
         int rc2 = pConn->pfnStreamIterate(pConn, pStream);
         if (RT_SUCCESS(rc2))
         {
             if (pSink->enmDir == AUDMIXSINKDIR_INPUT)
             {
-                rc = pConn->pfnStreamCapture(pConn, pStream, &cProc);
+                rc = pConn->pfnStreamCapture(pConn, pStream, &csProc);
                 if (RT_FAILURE(rc2))
                 {
                     LogFunc(("%s: Failed capturing stream '%s', rc=%Rrc\n", pSink->pszName, pStream->szName, rc2));
@@ -1447,12 +1453,12 @@ static int audioMixerSinkUpdateInternal(PAUDMIXSINK pSink)
                     continue;
                 }
 
-                if (cProc)
+                if (csProc)
                     pSink->fStatus |= AUDMIXSINK_STS_DIRTY;
             }
             else if (pSink->enmDir == AUDMIXSINKDIR_OUTPUT)
             {
-                rc2 = pConn->pfnStreamPlay(pConn, pStream, &cProc);
+                rc2 = pConn->pfnStreamPlay(pConn, pStream, &csProc);
                 if (RT_FAILURE(rc2))
                 {
                     LogFunc(("%s: Failed playing stream '%s', rc=%Rrc\n", pSink->pszName, pStream->szName, rc2));
@@ -1486,7 +1492,7 @@ static int audioMixerSinkUpdateInternal(PAUDMIXSINK pSink)
             }
         }
 
-        Log3Func(("\t%s: cPlayed/cCaptured=%RU32, rc2=%Rrc\n", pStream->szName, cProc, rc2));
+        Log3Func(("\t%s: cPlayed/cCaptured=%RU32, rc2=%Rrc\n", pStream->szName, csProc, rc2));
     }
 
     Log3Func(("[%s] fPendingDisable=%RTbool, %RU8/%RU8 streams disabled\n",

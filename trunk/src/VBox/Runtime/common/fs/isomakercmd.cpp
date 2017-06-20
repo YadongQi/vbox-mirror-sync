@@ -46,6 +46,7 @@
 #include <iprt/stream.h>
 #include <iprt/string.h>
 #include <iprt/vfs.h>
+#include <iprt/formats/iso9660.h>
 
 
 /*********************************************************************************************************************************
@@ -92,6 +93,13 @@ typedef enum RTFSISOMAKERCMDOPT
     RTFSISOMAKERCMD_OPT_OUTPUT_BUFFER_SIZE,
     RTFSISOMAKERCMD_OPT_RANDOM_OUTPUT_BUFFER_SIZE,
     RTFSISOMAKERCMD_OPT_NAME_SETUP,
+    RTFSISOMAKERCMD_OPT_NO_JOLIET,
+
+    RTFSISOMAKERCMD_OPT_ELTORITO_NEW_ENTRY,
+    RTFSISOMAKERCMD_OPT_ELTORITO_ADD_IMAGE,
+    RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_12,
+    RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_144,
+    RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_288,
 
     /*
      * Compatibility options:
@@ -110,7 +118,7 @@ typedef enum RTFSISOMAKERCMDOPT
     RTFSISOMAKERCMD_OPT_DETECT_HARDLINKS,
     RTFSISOMAKERCMD_OPT_DIR_MODE,
     RTFSISOMAKERCMD_OPT_DVD_VIDEO,
-    RTFSISOMAKERCMD_OPT_ELTORITO_ALT_BOOT,
+    RTFSISOMAKERCMD_OPT_ELTORITO_PLATFORM_ID,
     RTFSISOMAKERCMD_OPT_ELTORITO_HARD_DISK_BOOT,
     RTFSISOMAKERCMD_OPT_ELTORITO_INFO_TABLE,
     RTFSISOMAKERCMD_OPT_ELTORITO_LOAD_SEG,
@@ -226,6 +234,59 @@ typedef enum RTFSISOMAKERCMDOPT
     RTFSISOMAKERCMD_OPT_END
 } RTFSISOMAKERCMDOPT;
 
+
+/**
+ * El Torito boot entry.
+ */
+typedef struct RTFSISOMKCMDELTORITOENTRY
+{
+    /** The type of this entry.   */
+    enum
+    {
+        kEntryType_Invalid = 0,
+        kEntryType_Validation,      /**< Same as kEntryType_SectionHeader, just hardcoded #0. */
+        kEntryType_SectionHeader,
+        kEntryType_Default,         /**< Same as kEntryType_Section, just hardcoded #1. */
+        kEntryType_Section
+    }                   enmType;
+    /** Type specific data. */
+    union
+    {
+        struct
+        {
+            /** The platform ID (ISO9660_ELTORITO_PLATFORM_ID_XXX).    */
+            uint8_t     idPlatform;
+            /** Some string for the header. */
+            const char *pszString;
+        }               Validation,
+                        SectionHeader;
+        struct
+        {
+            /** The name of the boot image wihtin the ISO (-b option). */
+            const char *pszImageNameInIso;
+            /** The object ID of the image in the ISO.  This is set to UINT32_MAX when
+             * pszImageNameInIso is used (i.e. -b option) and we've delayed everything
+             * boot related till after all files have been added to the image. */
+            uint32_t    idxImageObj;
+            /** Whether to insert boot info table into the image. */
+            bool        fInsertBootInfoTable;
+            /** Bootble or not.  Possible to make BIOS set up emulation w/o booting it. */
+            bool        fBootable;
+            /** The media type (ISO9660_ELTORITO_BOOT_MEDIA_TYPE_XXX). */
+            uint8_t     bBootMediaType;
+            /** File system / partition type. */
+            uint8_t     bSystemType;
+            /** Load address divided by 0x10. */
+            uint16_t    uLoadSeg;
+            /** Number of sectors (512) to load. */
+            uint16_t    cSectorsToLoad;
+        }               Section,
+                        Default;
+    } u;
+} RTFSISOMKCMDELTORITOENTRY;
+/** Pointer to an el torito boot entry. */
+typedef RTFSISOMKCMDELTORITOENTRY *PRTFSISOMKCMDELTORITOENTRY;
+
 /**
  * ISO maker command options & state.
  */
@@ -267,6 +328,14 @@ typedef struct RTFSISOMAKERCMDOPTS
     uint32_t            afNameSpecifiers[RTFSISOMAKERCMD_MAX_NAMES];
     /** @} */
 
+    /** @name Booting related options and state.
+     * @{ */
+    /** Number of boot catalog entries (aBootCatEntries). */
+    uint32_t                    cBootCatEntries;
+    /** Boot catalog entries. */
+    RTFSISOMKCMDELTORITOENTRY   aBootCatEntries[64];
+    /** @} */
+
     /** Number of items (files, directories, images, whatever) we've added. */
     uint32_t            cItemsAdded;
 } RTFSISOMAKERCMDOPTS;
@@ -275,9 +344,9 @@ typedef RTFSISOMAKERCMDOPTS const *PCRTFSISOMAKERCMDOPTS;
 
 
 /**
- * Parsed name.
+ * One parsed name.
  */
-typedef struct RTFSISOMAKERCMDPARSEDNAME
+typedef struct RTFSISOMKCMDPARSEDNAME
 {
     /** Copy of the corresponding RTFSISOMAKERCMDOPTS::afNameSpecifiers
      * value. */
@@ -286,11 +355,40 @@ typedef struct RTFSISOMAKERCMDPARSEDNAME
     uint32_t            cchPath;
     /** Specified path. */
     char                szPath[RTPATH_MAX];
-} RTFSISOMAKERCMDPARSEDNAME;
+} RTFSISOMKCMDPARSEDNAME;
 /** Pointer to a parsed name. */
-typedef RTFSISOMAKERCMDPARSEDNAME *PRTFSISOMAKERCMDPARSEDNAME;
+typedef RTFSISOMKCMDPARSEDNAME *PRTFSISOMKCMDPARSEDNAME;
 /** Pointer to a const parsed name. */
-typedef RTFSISOMAKERCMDPARSEDNAME const *PCRTFSISOMAKERCMDPARSEDNAME;
+typedef RTFSISOMKCMDPARSEDNAME const *PCRTFSISOMKCMDPARSEDNAME;
+
+
+/**
+ * Parsed names.
+ */
+typedef struct RTFSISOMKCMDPARSEDNAMES
+{
+    /** Number of names. */
+    uint32_t                cNames;
+    /** Number of names with the source. */
+    uint32_t                cNamesWithSrc;
+    /** Special source types.
+     * Used for conveying commands to do on names intead of adding a source.
+     * Only used when adding generic stuff w/o any options involved.  */
+    enum
+    {
+        kSrcType_None,
+        kSrcType_Normal,
+        kSrcType_Remove,
+        kSrcType_MustRemove
+    }                       enmSrcType;
+    /** The parsed names. */
+    RTFSISOMKCMDPARSEDNAME  aNames[RTFSISOMAKERCMD_MAX_NAMES + 1];
+} RTFSISOMKCMDPARSEDNAMES;
+/** Pointer to parsed names. */
+typedef RTFSISOMKCMDPARSEDNAMES *PRTFSISOMKCMDPARSEDNAMES;
+/** Pointer to const parsed names. */
+typedef RTFSISOMKCMDPARSEDNAMES *PCRTFSISOMKCMDPARSEDNAMES;
+
 
 
 /*********************************************************************************************************************************
@@ -305,16 +403,44 @@ static const RTGETOPTDEF g_aRtFsIsoMakerOptions[] =
     /*
      * Unquie IPRT ISO maker options.
      */
-    { "--iprt-iso-maker-file-marker",   RTFSISOMAKERCMD_OPT_IPRT_ISO_MAKER_FILE_MARKER,     RTGETOPT_REQ_NOTHING },
+    { "--iprt-iso-maker-file-marker",           RTFSISOMAKERCMD_OPT_IPRT_ISO_MAKER_FILE_MARKER, RTGETOPT_REQ_STRING },
+    { "--iprt-iso-maker-file-marker-ms",        RTFSISOMAKERCMD_OPT_IPRT_ISO_MAKER_FILE_MARKER, RTGETOPT_REQ_STRING },
+    { "--iprt-iso-maker-file-marker-ms-crt",    RTFSISOMAKERCMD_OPT_IPRT_ISO_MAKER_FILE_MARKER, RTGETOPT_REQ_STRING },
+    { "--iprt-iso-maker-file-marker-bourne",    RTFSISOMAKERCMD_OPT_IPRT_ISO_MAKER_FILE_MARKER, RTGETOPT_REQ_STRING },
+    { "--iprt-iso-maker-file-marker-bourne-sh", RTFSISOMAKERCMD_OPT_IPRT_ISO_MAKER_FILE_MARKER, RTGETOPT_REQ_STRING },
+
     { "--output-buffer-size",           RTFSISOMAKERCMD_OPT_OUTPUT_BUFFER_SIZE,             RTGETOPT_REQ_UINT32  },
     { "--random-output-buffer-size",    RTFSISOMAKERCMD_OPT_RANDOM_OUTPUT_BUFFER_SIZE,      RTGETOPT_REQ_NOTHING },
-    { "--name-setup",                   RTFSISOMAKERCMD_OPT_NAME_SETUP,                     RTGETOPT_REQ_STRING },
+    { "--name-setup",                   RTFSISOMAKERCMD_OPT_NAME_SETUP,                     RTGETOPT_REQ_STRING  },
+    { "--no-joliet",                    RTFSISOMAKERCMD_OPT_NO_JOLIET,                      RTGETOPT_REQ_NOTHING },
+    { "--eltorito-new-entry",           RTFSISOMAKERCMD_OPT_ELTORITO_NEW_ENTRY,             RTGETOPT_REQ_NOTHING },
+    { "--eltorito-add-image",           RTFSISOMAKERCMD_OPT_ELTORITO_ADD_IMAGE,             RTGETOPT_REQ_NOTHING },
+    { "--eltorito-floppy-12",           RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_12,             RTGETOPT_REQ_NOTHING },
+    { "--eltorito-floppy-144",          RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_144,            RTGETOPT_REQ_NOTHING },
+    { "--eltorito-floppy-288",          RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_288,            RTGETOPT_REQ_NOTHING },
+
+#define DD(a_szLong, a_chShort, a_fFlags) { a_szLong, a_chShort, a_fFlags  }, { "-" a_szLong, a_chShort, a_fFlags  }
+
+    /*
+     * genisoimage/mkisofs compatibility options we've implemented:
+     *
+     */
+    { "--generic-boot",                 'G',                                                RTGETOPT_REQ_STRING  },
+    DD("-eltorito-boot",                'b',                                                RTGETOPT_REQ_STRING  ),
+    DD("-eltorito-alt-boot",            RTFSISOMAKERCMD_OPT_ELTORITO_NEW_ENTRY,             RTGETOPT_REQ_NOTHING ),
+    DD("-eltorito-platform-id",         RTFSISOMAKERCMD_OPT_ELTORITO_PLATFORM_ID,           RTGETOPT_REQ_STRING  ),
+    DD("-hard-disk-boot",               RTFSISOMAKERCMD_OPT_ELTORITO_HARD_DISK_BOOT,        RTGETOPT_REQ_NOTHING ),
+    DD("-no-emulation-boot",            RTFSISOMAKERCMD_OPT_ELTORITO_NO_EMULATION_BOOT,     RTGETOPT_REQ_NOTHING ),
+    DD("-no-boot",                      RTFSISOMAKERCMD_OPT_ELTORITO_NO_BOOT,               RTGETOPT_REQ_NOTHING ),
+    DD("-boot-load-seg",                RTFSISOMAKERCMD_OPT_ELTORITO_LOAD_SEG,              RTGETOPT_REQ_UINT16  ),
+    DD("-boot-load-size",               RTFSISOMAKERCMD_OPT_ELTORITO_LOAD_SIZE,             RTGETOPT_REQ_UINT16  ),
+    DD("-boot-info-table",              RTFSISOMAKERCMD_OPT_ELTORITO_INFO_TABLE,            RTGETOPT_REQ_STRING  ),
+    { "--boot-catalog",                 'c',                                                RTGETOPT_REQ_STRING  },
 
 
     /*
      * genisoimage/mkisofs compatibility:
      */
-#define DD(a_szLong, a_chShort, a_fFlags) { a_szLong, a_chShort, a_fFlags  }, { "-" a_szLong, a_chShort, a_fFlags  }
     DD("-abstract",                      RTFSISOMAKERCMD_OPT_ABSTRACT_FILE_ID,               RTGETOPT_REQ_STRING ),
     { "--application-id",               'A',                                                RTGETOPT_REQ_STRING  },
     DD("-allow-limited-size",           RTFSISOMAKERCMD_OPT_ALLOW_LIMITED_SIZE,             RTGETOPT_REQ_NOTHING ),
@@ -325,6 +451,7 @@ static const RTGETOPTDEF g_aRtFsIsoMakerOptions[] =
     DD("-biblio",                       RTFSISOMAKERCMD_OPT_BIBLIOGRAPHIC_FILE_ID,          RTGETOPT_REQ_STRING  ),
     DD("-cache-inodes",                 RTFSISOMAKERCMD_OPT_DETECT_HARDLINKS,               RTGETOPT_REQ_NOTHING ),
     DD("-no-cache-inodes",              RTFSISOMAKERCMD_OPT_NO_DETECT_HARDLINKS,            RTGETOPT_REQ_NOTHING ),
+
     DD("-alpha-boot",                   RTFSISOMAKERCMD_OPT_ALPHA_BOOT,                     RTGETOPT_REQ_STRING  ),
     DD("-hppa-bootloader",              RTFSISOMAKERCMD_OPT_HPPA_BOOTLOADER,                RTGETOPT_REQ_STRING  ),
     DD("-hppa-cmdline",                 RTFSISOMAKERCMD_OPT_HPPA_CMDLINE,                   RTGETOPT_REQ_STRING  ),
@@ -334,17 +461,7 @@ static const RTGETOPTDEF g_aRtFsIsoMakerOptions[] =
     DD("-mips-boot",                    RTFSISOMAKERCMD_OPT_MIPS_BOOT,                      RTGETOPT_REQ_STRING  ),
     DD("-mipsel-boot",                  RTFSISOMAKERCMD_OPT_MIPSEL_BOOT,                    RTGETOPT_REQ_STRING  ),
     DD("-sparc-boot",                   'B',                                                RTGETOPT_REQ_STRING  ),
-    { "--generic-boot",                 'G',                                                RTGETOPT_REQ_STRING  },
-    { "--eltorito-boot",                'b',                                                RTGETOPT_REQ_STRING  },
-    DD("-eltorito-alt-boot",            RTFSISOMAKERCMD_OPT_ELTORITO_ALT_BOOT,              RTGETOPT_REQ_NOTHING ),
-    DD("-hard-disk-boot",               RTFSISOMAKERCMD_OPT_ELTORITO_HARD_DISK_BOOT,        RTGETOPT_REQ_NOTHING ),
-    DD("-no-emulation-boot",            RTFSISOMAKERCMD_OPT_ELTORITO_NO_EMULATION_BOOT,     RTGETOPT_REQ_NOTHING ),
-    DD("-no-boot",                      RTFSISOMAKERCMD_OPT_ELTORITO_NO_BOOT,               RTGETOPT_REQ_NOTHING ),
-    DD("-boot-load-seg",                RTFSISOMAKERCMD_OPT_ELTORITO_LOAD_SEG,              RTGETOPT_REQ_UINT32  ),
-    DD("-boot-load-size",               RTFSISOMAKERCMD_OPT_ELTORITO_LOAD_SIZE,             RTGETOPT_REQ_UINT32  ),
-    DD("-boot-info-table",              RTFSISOMAKERCMD_OPT_ELTORITO_INFO_TABLE,            RTGETOPT_REQ_STRING  ),
     { "--cd-extra",                     'C',                                                RTGETOPT_REQ_STRING  },
-    { "--boot-catalog",                 'c',                                                RTGETOPT_REQ_STRING  },
     DD("-check-oldnames",                RTFSISOMAKERCMD_OPT_CHECK_OLD_NAMES,               RTGETOPT_REQ_NOTHING ),
     DD("-check-session",                 RTFSISOMAKERCMD_OPT_CHECK_SESSION,                 RTGETOPT_REQ_STRING  ),
     DD("-copyright",                     RTFSISOMAKERCMD_OPT_COPYRIGHT_FILE_ID,             RTGETOPT_REQ_STRING  ),
@@ -499,6 +616,48 @@ static int rtFsIsoMakerCmdErrorRc(PRTFSISOMAKERCMDOPTS pOpts, int rc, const char
 
 
 /**
+ * Wrapper around RTErrInfoSetV / RTMsgErrorV for doing the job of
+ * RTVfsChainMsgError.
+ *
+ * @returns @a rc
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszFunction         The API called.
+ * @param   pszSpec             The VFS chain specification or file path passed to the.
+ * @param   rc                  The return code.
+ * @param   offError            The error offset value returned (0 if not captured).
+ * @param   pErrInfo            Additional error information.  Optional.
+ */
+static int rtFsIsoMakerCmdChainError(PRTFSISOMAKERCMDOPTS pOpts, const char *pszFunction, const char *pszSpec, int rc,
+                                     uint32_t offError, PRTERRINFO pErrInfo)
+{
+    if (RTErrInfoIsSet(pErrInfo))
+    {
+        if (offError > 0)
+            rc = rtFsIsoMakerCmdErrorRc(pOpts, rc,
+                                        "%s failed with rc=%Rrc: %s\n"
+                                        "    '%s'\n"
+                                        "     %*s^\n",
+                                        pszFunction, rc, pErrInfo->pszMsg, pszSpec, offError, "");
+        else
+            rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "%s failed to open '%s': %Rrc: %s\n",
+                                        pszFunction, pszSpec, rc, pErrInfo->pszMsg);
+    }
+    else
+    {
+        if (offError > 0)
+            rc = rtFsIsoMakerCmdErrorRc(pOpts, rc,
+                                        "%s failed with rc=%Rrc:\n"
+                                        "    '%s'\n"
+                                        "     %*s^\n",
+                                        pszFunction, rc, pszSpec, offError, "");
+        else
+            rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "%s failed to open '%s': %Rrc\n", pszFunction, pszSpec, rc);
+    }
+    return rc;
+}
+
+
+/**
  * Wrapper around RTErrInfoSetV / RTMsgErrorV for displaying syntax errors.
  *
  * @returns VERR_INVALID_PARAMETER
@@ -619,7 +778,7 @@ static int rtFsIsoMakerCmdWriteImage(PRTFSISOMAKERCMDOPTS pOpts, RTVFSFILE hVfsS
                         else
                         {
                             rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "Error %Rrc writing %#zx bytes at offset %#RX64 to '%s'",
-                                                     rc, cbToCopy, offImage, pOpts->pszOutFile);
+                                                        rc, cbToCopy, offImage, pOpts->pszOutFile);
                             break;
                         }
                     }
@@ -642,11 +801,8 @@ static int rtFsIsoMakerCmdWriteImage(PRTFSISOMAKERCMDOPTS pOpts, RTVFSFILE hVfsS
 
                 RTVfsFileRelease(hVfsDstFile);
             }
-            else if (RTErrInfoIsSet(&ErrInfo.Core))
-                rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTVfsChainOpenFile(%s) failed: %Rrc - %s",
-                                         pOpts->cbOutputReadBuffer, rc, ErrInfo.Core.pszMsg);
             else
-                rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTVfsChainOpenFile(%s) failed: %Rrc", pOpts->cbOutputReadBuffer, rc);
+                rc = rtFsIsoMakerCmdChainError(pOpts, "RTVfsChainOpenFile", pOpts->pszOutFile, rc, offError, &ErrInfo.Core);
 
             RTMemTmpFree(pvBuf);
         }
@@ -913,46 +1069,243 @@ static int rtFsIsoMakerCmdOptNameSetup(PRTFSISOMAKERCMDOPTS pOpts, const char *p
 
 
 /**
+ * Processes a non-option argument.
+ *
+ * @returns IPRT status code.
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszSpec             The specification of what to add.
+ * @param   fWithSrc            Whether the specification includes a source path
+ *                              or not.
+ * @param   pParsed             Where to return the parsed name specification.
+ */
+static int rtFsIsoMakerCmdParseNameSpec(PRTFSISOMAKERCMDOPTS pOpts, const char *pszSpec, bool fWithSrc,
+                                        PRTFSISOMKCMDPARSEDNAMES pParsed)
+{
+    const char * const  pszSpecIn = pszSpec;
+    uint32_t const      cMaxNames = pOpts->cNameSpecifiers + fWithSrc;
+
+    /*
+     * Split it up by '='.
+     */
+    pParsed->cNames        = 0;
+    pParsed->cNamesWithSrc = 0;
+    pParsed->enmSrcType    = fWithSrc ? RTFSISOMKCMDPARSEDNAMES::kSrcType_Normal : RTFSISOMKCMDPARSEDNAMES::kSrcType_None;
+    for (;;)
+    {
+        const char *pszEqual   = strchr(pszSpec, '=');
+        size_t      cchName    = pszEqual ? pszEqual - pszSpec : strlen(pszSpec);
+        bool        fNeedSlash = (pszEqual || !fWithSrc) && !RTPATH_IS_SLASH(*pszSpec) && cchName > 0;
+        if (cchName + fNeedSlash >= sizeof(pParsed->aNames[pParsed->cNamesWithSrc].szPath))
+            return rtFsIsoMakerCmdSyntaxError(pOpts, "name #%u (0-based) is too long: %s", pParsed->cNamesWithSrc, pszSpecIn);
+        if (pParsed->cNamesWithSrc >= cMaxNames)
+            return rtFsIsoMakerCmdSyntaxError(pOpts, "too many names specified (max %u%s): %s",
+                                              pOpts->cNameSpecifiers, fWithSrc ? " + source" : "", pszSpecIn);
+        if (!fNeedSlash)
+            memcpy(pParsed->aNames[pParsed->cNamesWithSrc].szPath, pszSpec, cchName);
+        else
+        {
+            memcpy(&pParsed->aNames[pParsed->cNamesWithSrc].szPath[1], pszSpec, cchName);
+            pParsed->aNames[pParsed->cNamesWithSrc].szPath[0] = RTPATH_SLASH;
+            cchName++;
+        }
+        pParsed->aNames[pParsed->cNamesWithSrc].szPath[cchName] = '\0';
+        pParsed->aNames[pParsed->cNamesWithSrc].cchPath = (uint32_t)cchName;
+        pParsed->cNamesWithSrc++;
+
+        if (!pszEqual)
+        {
+            if (fWithSrc)
+            {
+                if (!cchName)
+                    return rtFsIsoMakerCmdSyntaxError(pOpts, "empty source file name: %s", pszSpecIn);
+                if (cchName == 8 && strcmp(pszSpec, ":remove:") == 0)
+                    pParsed->enmSrcType = RTFSISOMKCMDPARSEDNAMES::kSrcType_Remove;
+                else if (cchName == 13 && strcmp(pszSpec, ":must-remove:") == 0)
+                    pParsed->enmSrcType = RTFSISOMKCMDPARSEDNAMES::kSrcType_MustRemove;
+            }
+            break;
+        }
+        pszSpec = pszEqual + 1;
+    }
+
+    /*
+     * If there are too few names specified, move the source and repeat the
+     * last non-source name.  If only source, convert source into a name spec.
+     */
+    if (pParsed->cNamesWithSrc < cMaxNames)
+    {
+        uint32_t iSrc;
+        if (!fWithSrc)
+            iSrc = pParsed->cNamesWithSrc - 1;
+        else
+        {
+            pParsed->aNames[pOpts->cNameSpecifiers] = pParsed->aNames[pParsed->cNamesWithSrc - 1];
+            iSrc = pParsed->cNamesWithSrc >= 2 ? pParsed->cNamesWithSrc - 2 : 0;
+        }
+
+        /* If the source is a input file name specifier, reduce it to something that starts with a slash. */
+        if (pParsed->cNamesWithSrc == 1 && fWithSrc)
+        {
+            if (RTVfsChainIsSpec(pParsed->aNames[iSrc].szPath))
+            {
+                uint32_t offError;
+                char *pszFinalPath;
+                int rc = RTVfsChainQueryFinalPath(pParsed->aNames[iSrc].szPath, &pszFinalPath, &offError);
+                if (RT_FAILURE(rc))
+                    return rtFsIsoMakerCmdChainError(pOpts, "RTVfsChainQueryFinalPath",
+                                                     pParsed->aNames[iSrc].szPath, rc, offError, NULL);
+                pParsed->aNames[iSrc].cchPath = (uint32_t)strlen(pszFinalPath);
+                if (RTPATH_IS_SLASH(*pszFinalPath))
+                    memcpy(pParsed->aNames[iSrc].szPath, pszFinalPath, pParsed->aNames[iSrc].cchPath + 1);
+                else
+                {
+                    memcpy(&pParsed->aNames[iSrc].szPath[1], pszFinalPath, pParsed->aNames[iSrc].cchPath + 1);
+                    pParsed->aNames[iSrc].szPath[0] = RTPATH_SLASH;
+                    pParsed->aNames[iSrc].cchPath++;
+                }
+                RTStrFree(pszFinalPath);
+            }
+#if RTPATH_STYLE == RTPATH_STR_F_STYLE_DOS
+            else if (   RTPATH_IS_VOLSEP(pParsed->aNames[iSrc].szPath[1])
+                     && RT_C_IS_ALPHA(pParsed->aNames[iSrc].szPath[0]))
+            {
+                if (RTPATH_IS_SLASH(pParsed->aNames[iSrc].szPath[2]))
+                {
+                    memmove(&pParsed->aNames[iSrc].szPath[0], &pParsed->aNames[iSrc].szPath[2], pParsed->aNames[iSrc].cchPath - 1);
+                    pParsed->aNames[iSrc].cchPath -= 2;
+                }
+                else
+                {
+                    memmove(&pParsed->aNames[iSrc].szPath[1], &pParsed->aNames[iSrc].szPath[2], pParsed->aNames[iSrc].cchPath - 1);
+                    pParsed->aNames[iSrc].szPath[0] = RTPATH_SLASH;
+                    pParsed->aNames[iSrc].cchPath  -= 1;
+                }
+            }
+#endif
+            else if (!RTPATH_IS_SLASH(pParsed->aNames[iSrc].szPath[0]))
+            {
+                if (pParsed->aNames[iSrc].cchPath + 2 > sizeof(pParsed->aNames[iSrc].szPath))
+                    return rtFsIsoMakerCmdSyntaxError(pOpts, "name too long: %s", pszSpecIn);
+                memmove(&pParsed->aNames[iSrc].szPath[1], &pParsed->aNames[iSrc].szPath[0], pParsed->aNames[iSrc].cchPath + 1);
+                pParsed->aNames[iSrc].szPath[0] = RTPATH_SLASH;
+                pParsed->aNames[iSrc].cchPath++;
+            }
+        }
+
+        for (uint32_t iDst = iSrc + 1; iDst < pOpts->cNameSpecifiers; iDst++)
+            pParsed->aNames[iDst] = pParsed->aNames[iSrc];
+
+        pParsed->cNamesWithSrc = cMaxNames;
+    }
+    pParsed->cNames = pOpts->cNameSpecifiers;
+
+    /*
+     * Copy the specifier flags and check that the paths all starts with slashes.
+     */
+    for (uint32_t i = 0; i < pOpts->cNameSpecifiers; i++)
+    {
+        pParsed->aNames[i].fNameSpecifiers = pOpts->afNameSpecifiers[i];
+        Assert(   pParsed->aNames[i].cchPath == 0
+               || RTPATH_IS_SLASH(pParsed->aNames[i].szPath[0]));
+    }
+
+    return VINF_SUCCESS;
+}
+
+
+/**
+ * Enteres an object into the namespace by full paths.
+ *
+ * This is used by rtFsIsoMakerCmdOptEltoritoSetBootCatalogPath and
+ * rtFsIsoMakerCmdAddFile.
+ *
+ * @returns IPRT status code.
+ * @param   pOpts           The ISO maker command instance.
+ * @param   idxObj          The configuration index of the object to be named.
+ * @param   pParsed         The parsed names.
+ * @param   pszSrcOrName    Source file or name.
+ */
+static int rtFsIsoMakerCmdSetObjPaths(PRTFSISOMAKERCMDOPTS pOpts, uint32_t idxObj, PCRTFSISOMKCMDPARSEDNAMES pParsed,
+                                      const char *pszSrcOrName)
+{
+    int rc = VINF_SUCCESS;
+    for (uint32_t i = 0; i < pParsed->cNames; i++)
+        if (pParsed->aNames[i].cchPath > 0)
+        {
+            if (pParsed->aNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK)
+            {
+                rc = RTFsIsoMakerObjSetPath(pOpts->hIsoMaker, idxObj,
+                                            pParsed->aNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK,
+                                            pParsed->aNames[i].szPath);
+                if (RT_FAILURE(rc))
+                {
+                    rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "Error setting name '%s' on '%s': %Rrc",
+                                                pParsed->aNames[i].szPath, pszSrcOrName, rc);
+                    break;
+                }
+            }
+            if (pParsed->aNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MINOR_MASK)
+            {
+                /** @todo add APIs for this.   */
+            }
+        }
+    return rc;
+}
+
+
+/**
  * Adds a file.
  *
  * @returns IPRT status code.
  * @param   pOpts               The ISO maker command instance.
  * @param   pszSrc              The path to the source file.
- * @param   paParsedNames       Array of parsed names, there are
- *                              pOpts->cNameSpecifiers entries in the array.
+ * @param   pParsed             The parsed names.
+ * @param   pidxObj             Where to return the configuration index for the
+ *                              added file.  Optional.
  */
-static int rtFsIsoMakerCmdAddFile(PRTFSISOMAKERCMDOPTS pOpts, const char *pszSrc, PCRTFSISOMAKERCMDPARSEDNAME paParsedNames)
+static int rtFsIsoMakerCmdAddFile(PRTFSISOMAKERCMDOPTS pOpts, const char *pszSrc, PCRTFSISOMKCMDPARSEDNAMES pParsed,
+                                  uint32_t *pidxObj)
 {
     uint32_t idxObj;
     int rc = RTFsIsoMakerAddUnnamedFileWithSrcPath(pOpts->hIsoMaker, pszSrc, &idxObj);
     if (RT_SUCCESS(rc))
     {
         pOpts->cItemsAdded++;
+        if (pidxObj)
+            *pidxObj = idxObj;
 
-        for (uint32_t i = 0; i < pOpts->cNameSpecifiers; i++)
-            if (paParsedNames[i].cchPath > 0)
-            {
-                if (paParsedNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK)
-                {
-                    rc = RTFsIsoMakerObjSetPath(pOpts->hIsoMaker, idxObj,
-                                                paParsedNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK,
-                                                paParsedNames[i].szPath);
-                    if (RT_FAILURE(rc))
-                    {
-                        rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "Error setting name '%s' on '%s': %Rrc",
-                                                    paParsedNames[i].szPath, pszSrc, rc);
-                        break;
-                    }
-                }
-                if (paParsedNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MINOR_MASK)
-                {
-                    /** @todo add APIs for this.   */
-                }
-            }
+        rc = rtFsIsoMakerCmdSetObjPaths(pOpts, idxObj, pParsed, pszSrc);
     }
     else
         rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "Error adding '%s': %Rrc", pszSrc, rc);
     return rc;
+}
+
+
+/**
+ * Adds a file after first making sure it's a file.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszSrc              The path to the source file.
+ * @param   pParsed             The parsed names.
+ * @param   pidxObj             Where to return the configuration index for the
+ *                              added file.  Optional.
+ */
+static int rtFsIsoMakerCmdStatAndAddFile(PRTFSISOMAKERCMDOPTS pOpts, const char *pszSrc, PCRTFSISOMKCMDPARSEDNAMES pParsed,
+                                         uint32_t *pidxObj)
+{
+    RTFSOBJINFO     ObjInfo;
+    uint32_t        offError;
+    RTERRINFOSTATIC ErrInfo;
+    int rc = RTVfsChainQueryInfo(pszSrc, &ObjInfo, RTFSOBJATTRADD_UNIX,
+                                 RTPATH_F_FOLLOW_LINK, &offError, RTErrInfoInitStatic(&ErrInfo));
+    if (RT_FAILURE(rc))
+        return rtFsIsoMakerCmdChainError(pOpts, "RTVfsChainQueryInfo", pszSrc, rc, offError, &ErrInfo.Core);
+
+    if (RTFS_IS_FILE(ObjInfo.Attr.fMode))
+        return rtFsIsoMakerCmdAddFile(pOpts, pszSrc, pParsed, pidxObj);
+    return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_A_FILE, "Not a file: %s", pszSrc);
 }
 
 
@@ -965,171 +1318,565 @@ static int rtFsIsoMakerCmdAddFile(PRTFSISOMAKERCMDOPTS pOpts, const char *pszSrc
  */
 static int rtFsIsoMakerCmdAddSomething(PRTFSISOMAKERCMDOPTS pOpts, const char *pszSpec)
 {
-    const char * const pszSpecIn = pszSpec;
-    enum { kSpecialSrc_Normal, kSpecialSrc_Remove, kSpecialSrc_MustRemove } enmSpecialSrc = kSpecialSrc_Normal;
-
     /*
-     * Split it up by '='.  Because of the source, which comes last,
+     * Parse the name spec.
      */
-    RTFSISOMAKERCMDPARSEDNAME   aParsedNames[RTFSISOMAKERCMD_MAX_NAMES + 1];
-    uint32_t                    cParsedNames = 0;
-    for (;;)
-    {
-        const char *pszEqual   = strchr(pszSpec, '=');
-        size_t      cchName    = pszEqual ? pszEqual - pszSpec : strlen(pszSpec);
-        bool        fNeedSlash = pszEqual && !RTPATH_IS_SLASH(*pszSpec) && cchName > 0;
-        if (cchName + fNeedSlash >= sizeof(aParsedNames[cParsedNames].szPath))
-            return rtFsIsoMakerCmdSyntaxError(pOpts, "name #%u (0-based) is too long: %s", cParsedNames, pszSpecIn);
-        if (cParsedNames >= pOpts->cNameSpecifiers + 1)
-            return rtFsIsoMakerCmdSyntaxError(pOpts, "too many names specified (max %u + source): %s",
-                                              pOpts->cNameSpecifiers,  pszSpecIn);
-        if (!fNeedSlash)
-            memcpy(aParsedNames[cParsedNames].szPath, pszSpec, cchName);
-        else
-        {
-            memcpy(&aParsedNames[cParsedNames].szPath[1], pszSpec, cchName);
-            aParsedNames[cParsedNames].szPath[0] = RTPATH_SLASH;
-            cchName++;
-        }
-        aParsedNames[cParsedNames].szPath[cchName] = '\0';
-        aParsedNames[cParsedNames].cchPath = (uint32_t)cchName;
-        cParsedNames++;
-
-        if (!pszEqual)
-        {
-            if (!cchName)
-                return rtFsIsoMakerCmdSyntaxError(pOpts, "empty source file name: %s", pszSpecIn);
-            if (cchName == 8 && strcmp(pszSpec, ":remove:") == 0)
-                enmSpecialSrc = kSpecialSrc_Remove;
-            else if (cchName == 13 && strcmp(pszSpec, ":must-remove:") == 0)
-                enmSpecialSrc = kSpecialSrc_MustRemove;
-            break;
-        }
-        pszSpec = pszEqual + 1;
-    }
-
-    /*
-     * If there are too few names specified, move the source and repeat the penultimate name.
-     */
-    if (cParsedNames < pOpts->cNameSpecifiers + 1)
-    {
-        aParsedNames[pOpts->cNameSpecifiers] = aParsedNames[cParsedNames - 1];
-        uint32_t iSrc = cParsedNames >= 2 ? cParsedNames - 2 : 0;
-
-        /* If the source is a input file name specifier, reduce it to something that starts with a slash. */
-        if (cParsedNames == 1)
-        {
-            if (RTVfsChainIsSpec(aParsedNames[iSrc].szPath))
-            {
-                char *pszFinalPath;
-                int rc = RTVfsChainQueryFinalPath(aParsedNames[iSrc].szPath, &pszFinalPath, NULL);
-                if (RT_FAILURE(rc))
-                    return rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTVfsChainQueryFinalPath failed with %Rrc on: %s", rc, pszSpecIn);
-                aParsedNames[iSrc].cchPath = (uint32_t)strlen(pszFinalPath);
-                if (RTPATH_IS_SLASH(*pszFinalPath))
-                    memcpy(aParsedNames[iSrc].szPath, pszFinalPath, aParsedNames[iSrc].cchPath + 1);
-                else
-                {
-                    memcpy(&aParsedNames[iSrc].szPath[1], pszFinalPath, aParsedNames[iSrc].cchPath + 1);
-                    aParsedNames[iSrc].szPath[0] = RTPATH_SLASH;
-                    aParsedNames[iSrc].cchPath++;
-                }
-                RTStrFree(pszFinalPath);
-            }
-#if RTPATH_STYLE == RTPATH_STR_F_STYLE_DOS
-            else if (   RTPATH_IS_VOLSEP(aParsedNames[iSrc].szPath[1])
-                     && RT_C_IS_ALPHA(aParsedNames[iSrc].szPath[0]))
-            {
-                if (RTPATH_IS_SLASH(aParsedNames[iSrc].szPath[2]))
-                {
-                    memmove(&aParsedNames[iSrc].szPath[0], &aParsedNames[iSrc].szPath[2], aParsedNames[iSrc].cchPath - 1);
-                    aParsedNames[iSrc].cchPath -= 2;
-                }
-                else
-                {
-                    memmove(&aParsedNames[iSrc].szPath[1], &aParsedNames[iSrc].szPath[2], aParsedNames[iSrc].cchPath - 1);
-                    aParsedNames[iSrc].szPath[0] = RTPATH_SLASH;
-                    aParsedNames[iSrc].cchPath  -= 1;
-                }
-            }
-#endif
-            else if (!RTPATH_IS_SLASH(aParsedNames[iSrc].szPath[0]))
-            {
-                if (aParsedNames[iSrc].cchPath + 2 > sizeof(aParsedNames[iSrc].szPath))
-                    return rtFsIsoMakerCmdSyntaxError(pOpts, "name too long: %s", pszSpecIn);
-                memmove(&aParsedNames[iSrc].szPath[1], &aParsedNames[iSrc].szPath[0], aParsedNames[iSrc].cchPath + 1);
-                aParsedNames[iSrc].szPath[0] = RTPATH_SLASH;
-                aParsedNames[iSrc].cchPath++;
-            }
-        }
-
-        for (uint32_t iDst = iSrc + 1; iDst < pOpts->cNameSpecifiers; iDst++)
-            aParsedNames[iDst] = aParsedNames[iSrc];
-        cParsedNames = pOpts->cNameSpecifiers + 1;
-    }
-
-    /*
-     * Copy the specifier flags and check that the paths all starts with slashes.
-     */
-    for (uint32_t i = 0; i < pOpts->cNameSpecifiers; i++)
-    {
-        aParsedNames[i].fNameSpecifiers = pOpts->afNameSpecifiers[i];
-        Assert(   aParsedNames[i].cchPath == 0
-               || RTPATH_IS_SLASH(aParsedNames[i].szPath[0]));
-    }
+    RTFSISOMKCMDPARSEDNAMES Parsed;
+    int rc = rtFsIsoMakerCmdParseNameSpec(pOpts, pszSpec, true /*fWithSrc*/, &Parsed);
+    if (RT_FAILURE(rc))
+        return rc;
 
     /*
      * Deal with special source filenames used to remove/change stuff.
      */
-    if (   enmSpecialSrc == kSpecialSrc_Remove
-        || enmSpecialSrc == kSpecialSrc_MustRemove)
+    if (   Parsed.enmSrcType == RTFSISOMKCMDPARSEDNAMES::kSrcType_Remove
+        || Parsed.enmSrcType == RTFSISOMKCMDPARSEDNAMES::kSrcType_MustRemove)
     {
         const char *pszFirstNm = NULL;
         uint32_t    cRemoved   = 0;
         for (uint32_t i = 0; i < pOpts->cNameSpecifiers; i++)
-            if (   aParsedNames[i].cchPath > 0
-                && (aParsedNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK))
+            if (   Parsed.aNames[i].cchPath > 0
+                && (Parsed.aNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK))
             {
-                pszFirstNm = aParsedNames[i].szPath;
+                pszFirstNm = Parsed.aNames[i].szPath;
                 uint32_t idxObj = RTFsIsoMakerGetObjIdxForPath(pOpts->hIsoMaker,
-                                                               aParsedNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK,
-                                                               aParsedNames[i].szPath);
+                                                               Parsed.aNames[i].fNameSpecifiers & RTFSISOMAKERCMDNAME_MAJOR_MASK,
+                                                               Parsed.aNames[i].szPath);
                 if (idxObj != UINT32_MAX)
                 {
-                    int rc = RTFsIsoMakerObjRemove(pOpts->hIsoMaker, idxObj);
+                    rc = RTFsIsoMakerObjRemove(pOpts->hIsoMaker, idxObj);
                     if (RT_FAILURE(rc))
-                        return rtFsIsoMakerCmdErrorRc(pOpts, rc, "Failed to remove '%s': %Rrc", pszSpecIn, rc);
+                        return rtFsIsoMakerCmdErrorRc(pOpts, rc, "Failed to remove '%s': %Rrc", pszSpec, rc);
                     cRemoved++;
                 }
             }
-        if (   enmSpecialSrc == kSpecialSrc_MustRemove
+        if (   Parsed.enmSrcType  == RTFSISOMKCMDPARSEDNAMES::kSrcType_MustRemove
             && cRemoved == 0)
-            return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_FOUND, "Failed to locate '%s' for removal", pszSpecIn);
+            return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_FOUND, "Failed to locate '%s' for removal", pszSpec);
     }
     /*
      * Add regular source.
      */
     else
     {
-        const char     *pszSrc = aParsedNames[cParsedNames - 1].szPath;
+        const char     *pszSrc = Parsed.aNames[Parsed.cNamesWithSrc - 1].szPath;
         RTFSOBJINFO     ObjInfo;
         uint32_t        offError;
         RTERRINFOSTATIC ErrInfo;
-        int rc = RTVfsChainQueryInfo(pszSrc, &ObjInfo, RTFSOBJATTRADD_UNIX,
-                                     RTPATH_F_FOLLOW_LINK, &offError, RTErrInfoInitStatic(&ErrInfo));
+        rc = RTVfsChainQueryInfo(pszSrc, &ObjInfo, RTFSOBJATTRADD_UNIX,
+                                 RTPATH_F_FOLLOW_LINK, &offError, RTErrInfoInitStatic(&ErrInfo));
         if (RT_FAILURE(rc))
-            return rtFsIsoMakerCmdErrorRc(pOpts, rc, "Error query info on '%s': %Rrc", pszSrc, rc);
+            return rtFsIsoMakerCmdChainError(pOpts, "RTVfsChainQueryInfo", pszSrc, rc, offError, &ErrInfo.Core);
+
         if (RTFS_IS_FILE(ObjInfo.Attr.fMode))
-            return rtFsIsoMakerCmdAddFile(pOpts, pszSrc, aParsedNames);
+            return rtFsIsoMakerCmdAddFile(pOpts, pszSrc, &Parsed, NULL /*pidxObj*/);
+
         if (RTFS_IS_DIRECTORY(ObjInfo.Attr.fMode))
-            return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_IMPLEMENTED, "Adding directory '%s' failed: not implemented", pszSpecIn);
+            return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_IMPLEMENTED, "Adding directory '%s' failed: not implemented", pszSpec);
+
         if (RTFS_IS_SYMLINK(ObjInfo.Attr.fMode))
-            return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_IMPLEMENTED, "Adding symlink '%s' failed: not implemented", pszSpecIn);
-        return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_IMPLEMENTED, "Adding special file '%s' failed: not implemented", pszSpecIn);
+            return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_IMPLEMENTED, "Adding symlink '%s' failed: not implemented", pszSpec);
+
+        return rtFsIsoMakerCmdErrorRc(pOpts, VERR_NOT_IMPLEMENTED, "Adding special file '%s' failed: not implemented", pszSpec);
     }
 
     return VINF_SUCCESS;
 }
+
+
+/**
+ * Deals with: -G|--generic-boot {file}
+ *
+ * This concers content the first 16 sectors of the image.  We start loading the
+ * file at byte 0 in the image and stops at 32KB.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszGenericBootImage The generic boot image source.
+ */
+static int rtFsIsoMakerCmdOptGenericBoot(PRTFSISOMAKERCMDOPTS pOpts, const char *pszGenericBootImage)
+{
+    RTERRINFOSTATIC ErrInfo;
+    uint32_t        offError;
+    RTVFSFILE       hVfsFile;
+    int rc = RTVfsChainOpenFile(pszGenericBootImage, RTFILE_O_READ | RTFILE_O_OPEN | RTFILE_O_DENY_WRITE, &hVfsFile,
+                                &offError, RTErrInfoInitStatic(&ErrInfo));
+    if (RT_FAILURE(rc))
+        return rtFsIsoMakerCmdChainError(pOpts, "RTVfsChainOpenFile", pszGenericBootImage, rc, offError, &ErrInfo.Core);
+
+    uint8_t abBuf[_32K];
+    size_t  cbRead;
+    rc = RTVfsFileReadAt(hVfsFile, 0, abBuf, sizeof(abBuf), &cbRead);
+    RTVfsFileRelease(hVfsFile);
+    if (RT_FAILURE(rc))
+        return rtFsIsoMakerCmdErrorRc(pOpts, rc, "Error reading 32KB from generic boot image '%s': %Rrc", pszGenericBootImage, rc);
+
+    rc = RTFsIsoMakerSetSysAreaContent(pOpts->hIsoMaker, abBuf, cbRead, 0);
+    if (RT_FAILURE(rc))
+        return rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTFsIsoMakerSetSysAreaContent failed with a %zu bytes input: %Rrc", cbRead, rc);
+
+    return VINF_SUCCESS;
+}
+
+
+/**
+ * Helper that makes sure we've got a validation boot entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ */
+static void rtFsIsoMakerCmdOptEltoritoEnsureValidationEntry(PRTFSISOMAKERCMDOPTS pOpts)
+{
+    if (pOpts->cBootCatEntries == 0)
+    {
+        pOpts->aBootCatEntries[0].enmType                       = RTFSISOMKCMDELTORITOENTRY::kEntryType_Validation;
+        pOpts->aBootCatEntries[0].u.Validation.idPlatform       = ISO9660_ELTORITO_PLATFORM_ID_X86;
+        pOpts->aBootCatEntries[0].u.Validation.pszString        = NULL;
+        pOpts->cBootCatEntries = 1;
+    }
+}
+
+
+/**
+ * Helper that makes sure we've got a current boot entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   fForceNew           Whether to force a new entry.
+ * @param   pidxBootCat         Where to return the boot catalog index.
+ */
+static int rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(PRTFSISOMAKERCMDOPTS pOpts, bool fForceNew, uint32_t *pidxBootCat)
+{
+    rtFsIsoMakerCmdOptEltoritoEnsureValidationEntry(pOpts);
+
+    uint32_t i = pOpts->cBootCatEntries;
+    if (i == 2 && fForceNew)
+    {
+        pOpts->aBootCatEntries[i].enmType                       = RTFSISOMKCMDELTORITOENTRY::kEntryType_SectionHeader;
+        pOpts->aBootCatEntries[i].u.SectionHeader.idPlatform    = pOpts->aBootCatEntries[0].u.Validation.idPlatform;
+        pOpts->aBootCatEntries[i].u.SectionHeader.pszString     = NULL;
+        pOpts->cBootCatEntries = ++i;
+    }
+
+    if (   i == 1
+        || fForceNew
+        || pOpts->aBootCatEntries[i - 1].enmType == RTFSISOMKCMDELTORITOENTRY::kEntryType_SectionHeader)
+    {
+        if (i >= RT_ELEMENTS(pOpts->aBootCatEntries))
+        {
+            *pidxBootCat = UINT32_MAX;
+            return rtFsIsoMakerCmdErrorRc(pOpts, VERR_BUFFER_OVERFLOW, "Too many boot catalog entries");
+        }
+
+        pOpts->aBootCatEntries[i].enmType                       = i == 1 ? RTFSISOMKCMDELTORITOENTRY::kEntryType_Default
+                                                                :          RTFSISOMKCMDELTORITOENTRY::kEntryType_Section;
+        pOpts->aBootCatEntries[i].u.Section.pszImageNameInIso   = NULL;
+        pOpts->aBootCatEntries[i].u.Section.idxImageObj         = UINT32_MAX;
+        pOpts->aBootCatEntries[i].u.Section.fInsertBootInfoTable = false;
+        pOpts->aBootCatEntries[i].u.Section.fBootable           = true;
+        pOpts->aBootCatEntries[i].u.Section.bBootMediaType      = ISO9660_ELTORITO_BOOT_MEDIA_TYPE_MASK;
+        pOpts->aBootCatEntries[i].u.Section.bSystemType         = 1 /*FAT12*/;
+        pOpts->aBootCatEntries[i].u.Section.uLoadSeg            = 0x7c0;
+        pOpts->aBootCatEntries[i].u.Section.cSectorsToLoad      = 4;
+        pOpts->cBootCatEntries = ++i;
+    }
+
+    *pidxBootCat = i - 1;
+    return VINF_SUCCESS;
+}
+
+
+/**
+ * Deals with: --boot-catalog <path-spec>
+ *
+ * This enters the boot catalog into the namespaces of the image.  The path-spec
+ * is similar to what rtFsIsoMakerCmdAddSomething processes, only there isn't a
+ * source file part.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszGenericBootImage The generic boot image source.
+ */
+static int rtFsIsoMakerCmdOptEltoritoSetBootCatalogPath(PRTFSISOMAKERCMDOPTS pOpts, const char *pszBootCat)
+{
+    /* Make sure we'll fail later if no other boot options are present. */
+    rtFsIsoMakerCmdOptEltoritoEnsureValidationEntry(pOpts);
+
+    /* Parse the name spec. */
+    RTFSISOMKCMDPARSEDNAMES Parsed;
+    int rc = rtFsIsoMakerCmdParseNameSpec(pOpts, pszBootCat, false /*fWithSrc*/, &Parsed);
+    if (RT_SUCCESS(rc))
+    {
+        /* Query/create the boot catalog and enter it into the name spaces. */
+        uint32_t idxBootCatObj;
+        rc = RTFsIsoMakerQueryObjIdxForBootCatalog(pOpts->hIsoMaker, &idxBootCatObj);
+        if (RT_SUCCESS(rc))
+            rc = rtFsIsoMakerCmdSetObjPaths(pOpts, idxBootCatObj, &Parsed, "boot catalog");
+        else
+            rc = rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTFsIsoMakerQueryBootCatalogPathObjIdx failed: %Rrc", rc);
+    }
+    return rc;
+}
+
+
+/**
+ * Deals with: --eltorito-add-image {file-spec}
+ *
+ * This differs from -b|--eltorito-boot in that it takes a source file
+ * specification identical to what rtFsIsoMakerCmdAddSomething processes instead
+ * of a reference to a file in the image.
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszGenericBootImage The generic boot image source.
+ */
+static int rtFsIsoMakerCmdOptEltoritoAddImage(PRTFSISOMAKERCMDOPTS pOpts, const char *pszBootImageSpec)
+{
+    /* Parse the name spec. */
+    RTFSISOMKCMDPARSEDNAMES Parsed;
+    int rc = rtFsIsoMakerCmdParseNameSpec(pOpts, pszBootImageSpec, true /*fWithSrc*/, &Parsed);
+    if (RT_SUCCESS(rc))
+    {
+        uint32_t idxBootCat;
+        rc = rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, false /*fForceNew*/, &idxBootCat);
+        if (RT_SUCCESS(rc))
+        {
+            if (   pOpts->aBootCatEntries[idxBootCat].u.Section.idxImageObj != UINT32_MAX
+                || pOpts->aBootCatEntries[idxBootCat].u.Section.pszImageNameInIso != NULL)
+                rc = rtFsIsoMakerCmdSyntaxError(pOpts, "boot image already given for current El Torito entry (%#u)", idxBootCat);
+            else
+            {
+                uint32_t idxImageObj;
+                rc = rtFsIsoMakerCmdStatAndAddFile(pOpts, Parsed.aNames[Parsed.cNamesWithSrc - 1].szPath, &Parsed, &idxImageObj);
+                if (RT_SUCCESS(rc))
+                    pOpts->aBootCatEntries[idxBootCat].u.Section.idxImageObj = idxImageObj;
+            }
+        }
+    }
+
+    return rc;
+}
+
+
+/**
+ * Deals with: -b|--eltorito-boot {file-in-iso}
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszGenericBootImage The generic boot image source.
+ */
+static int rtFsIsoMakerCmdOptEltoritoBoot(PRTFSISOMAKERCMDOPTS pOpts, const char *pszBootImage)
+{
+    uint32_t idxBootCat;
+    int rc = rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, false /*fForceNew*/, &idxBootCat);
+    if (RT_SUCCESS(rc))
+    {
+        if (   pOpts->aBootCatEntries[idxBootCat].u.Section.idxImageObj != UINT32_MAX
+            || pOpts->aBootCatEntries[idxBootCat].u.Section.pszImageNameInIso != NULL)
+            return rtFsIsoMakerCmdSyntaxError(pOpts, "boot image already given for current El Torito entry (%#u)", idxBootCat);
+
+        uint32_t idxImageObj = RTFsIsoMakerGetObjIdxForPath(pOpts->hIsoMaker, RTFSISOMAKER_NAMESPACE_ALL, pszBootImage);
+        if (idxImageObj == UINT32_MAX)
+            pOpts->aBootCatEntries[idxBootCat].u.Section.pszImageNameInIso = pszBootImage;
+        pOpts->aBootCatEntries[idxBootCat].u.Section.idxImageObj = idxImageObj;
+    }
+    return rc;
+}
+
+
+/**
+ * Deals with: --eltorito-platform-id {x86|PPC|Mac|efi|number}
+ *
+ * Operates on the validation entry or a section header.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   pszPlatformId       The platform ID.
+ */
+static int rtFsIsoMakerCmdOptEltoritoPlatformId(PRTFSISOMAKERCMDOPTS pOpts, const char *pszPlatformId)
+{
+    /* Decode it. */
+    uint8_t idPlatform;
+    if (strcmp(pszPlatformId, "x86") == 0)
+        idPlatform = ISO9660_ELTORITO_PLATFORM_ID_X86;
+    else if (strcmp(pszPlatformId, "PPC") == 0)
+        idPlatform = ISO9660_ELTORITO_PLATFORM_ID_PPC;
+    else if (strcmp(pszPlatformId, "Mac") == 0)
+        idPlatform = ISO9660_ELTORITO_PLATFORM_ID_MAC;
+    else if (strcmp(pszPlatformId, "efi") == 0)
+        idPlatform = ISO9660_ELTORITO_PLATFORM_ID_EFI;
+    else
+    {
+        int rc = RTStrToUInt8Full(pszPlatformId, 0, &idPlatform);
+        if (rc != VINF_SUCCESS)
+            return rtFsIsoMakerCmdSyntaxError(pOpts, "invalid or unknown platform ID: %s", pszPlatformId);
+    }
+
+    /* If this option comes before anything related to the default entry, work
+       on the validation entry. */
+    if (pOpts->cBootCatEntries <= 1)
+    {
+        rtFsIsoMakerCmdOptEltoritoEnsureValidationEntry(pOpts);
+        pOpts->aBootCatEntries[0].u.Validation.idPlatform = idPlatform;
+    }
+    /* Otherwise, work on the current section header, creating a new one if necessary. */
+    else
+    {
+        uint32_t idxBootCat = pOpts->cBootCatEntries - 1;
+        if (pOpts->aBootCatEntries[idxBootCat].enmType == RTFSISOMKCMDELTORITOENTRY::kEntryType_SectionHeader)
+            pOpts->aBootCatEntries[idxBootCat].u.SectionHeader.idPlatform = idPlatform;
+        else
+        {
+            idxBootCat++;
+            if (idxBootCat + 2 > RT_ELEMENTS(pOpts->aBootCatEntries))
+                return rtFsIsoMakerCmdErrorRc(pOpts, VERR_BUFFER_OVERFLOW, "Too many boot catalog entries");
+
+            pOpts->aBootCatEntries[idxBootCat].enmType                    = RTFSISOMKCMDELTORITOENTRY::kEntryType_SectionHeader;
+            pOpts->aBootCatEntries[idxBootCat].u.SectionHeader.idPlatform = idPlatform;
+            pOpts->aBootCatEntries[idxBootCat].u.SectionHeader.pszString  = NULL;
+            pOpts->cBootCatEntries = idxBootCat + 1;
+        }
+    }
+    return VINF_SUCCESS;
+}
+
+
+/**
+ * Deals with: -no-boot
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ */
+static int rtFsIsoMakerCmdOptEltoritoSetNotBootable(PRTFSISOMAKERCMDOPTS pOpts)
+{
+    uint32_t idxBootCat;
+    int rc = rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, false /*fForceNew*/, &idxBootCat);
+    if (RT_SUCCESS(rc))
+        pOpts->aBootCatEntries[idxBootCat].u.Section.fBootable = false;
+    return rc;
+}
+
+
+/**
+ * Deals with: -hard-disk-boot, -no-emulation-boot, --eltorito-floppy-12,
+ *             --eltorito-floppy-144, --eltorito-floppy-288
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   bMediaType          The media type.
+ */
+static int rtFsIsoMakerCmdOptEltoritoSetMediaType(PRTFSISOMAKERCMDOPTS pOpts, uint8_t bMediaType)
+{
+    uint32_t idxBootCat;
+    int rc = rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, false /*fForceNew*/, &idxBootCat);
+    if (RT_SUCCESS(rc))
+        pOpts->aBootCatEntries[idxBootCat].u.Section.bBootMediaType = bMediaType;
+    return rc;
+}
+
+
+/**
+ * Deals with: -boot-load-seg {seg}
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   uSeg                The load segment.
+ */
+static int rtFsIsoMakerCmdOptEltoritoSetLoadSegment(PRTFSISOMAKERCMDOPTS pOpts, uint16_t uSeg)
+{
+    uint32_t idxBootCat;
+    int rc = rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, false /*fForceNew*/, &idxBootCat);
+    if (RT_SUCCESS(rc))
+        pOpts->aBootCatEntries[idxBootCat].u.Section.uLoadSeg = uSeg;
+    return rc;
+}
+
+
+/**
+ * Deals with: -boot-load-size {sectors}
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ * @param   cSectors            Number of emulated sectors to load
+ */
+static int rtFsIsoMakerCmdOptEltoritoSetLoadSectorCount(PRTFSISOMAKERCMDOPTS pOpts, uint16_t cSectors)
+{
+    uint32_t idxBootCat;
+    int rc = rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, false /*fForceNew*/, &idxBootCat);
+    if (RT_SUCCESS(rc))
+        pOpts->aBootCatEntries[idxBootCat].u.Section.cSectorsToLoad = cSectors;
+    return rc;
+}
+
+
+/**
+ * Deals with: -boot-info-table
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ */
+static int rtFsIsoMakerCmdOptEltoritoEnableBootInfoTablePatching(PRTFSISOMAKERCMDOPTS pOpts)
+{
+    uint32_t idxBootCat;
+    int rc = rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, false /*fForceNew*/, &idxBootCat);
+    if (RT_SUCCESS(rc))
+        pOpts->aBootCatEntries[idxBootCat].u.Section.fInsertBootInfoTable = true;
+    return rc;
+}
+
+
+/**
+ * Validates and commits the boot catalog stuff.
+ *
+ * ASSUMING this is called after all options are parsed and there is only this
+ * one call.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ */
+static int rtFsIsoMakerCmdOptEltoritoCommitBootCatalog(PRTFSISOMAKERCMDOPTS pOpts)
+{
+    if (pOpts->cBootCatEntries == 0)
+        return VINF_SUCCESS;
+
+    /*
+     * Locate and configure the boot images first.
+     */
+    int rc;
+    PRTFSISOMKCMDELTORITOENTRY pBootCatEntry = &pOpts->aBootCatEntries[1];
+    for (uint32_t idxBootCat = 1; idxBootCat < pOpts->cBootCatEntries; idxBootCat++, pBootCatEntry++)
+        if (   pBootCatEntry->enmType == RTFSISOMKCMDELTORITOENTRY::kEntryType_Default
+            || pBootCatEntry->enmType == RTFSISOMKCMDELTORITOENTRY::kEntryType_Section)
+        {
+            /* Make sure we've got a boot image. */
+            uint32_t idxImageObj = pBootCatEntry->u.Section.idxImageObj;
+            if (idxImageObj == UINT32_MAX)
+            {
+                const char *pszBootImage = pBootCatEntry->u.Section.pszImageNameInIso;
+                if (pszBootImage == NULL)
+                    return rtFsIsoMakerCmdSyntaxError(pOpts, "No image name given for boot catalog entry #%u", idxBootCat);
+
+                idxImageObj = RTFsIsoMakerGetObjIdxForPath(pOpts->hIsoMaker, RTFSISOMAKER_NAMESPACE_ALL, pszBootImage);
+                if (idxImageObj == UINT32_MAX)
+                    return rtFsIsoMakerCmdSyntaxError(pOpts, "Unable to locate image for boot catalog entry #%u: %s",
+                                                      idxBootCat, pszBootImage);
+                pBootCatEntry->u.Section.idxImageObj = idxImageObj;
+            }
+
+            /* Enable patching it? */
+            if (pBootCatEntry->u.Section.fInsertBootInfoTable)
+            {
+                rc = RTFsIsoMakerObjEnableBootInfoTablePatching(pOpts->hIsoMaker, idxImageObj, true);
+                if (RT_FAILURE(rc))
+                    return rtFsIsoMakerCmdErrorRc(pOpts, rc,
+                                                  "RTFsIsoMakerObjEnableBootInfoTablePatching failed on entry #%u: %Rrc\n",
+                                                  idxBootCat, rc);
+            }
+
+            /* Figure out the floppy type given the object size. */
+            if (pBootCatEntry->u.Section.bBootMediaType == ISO9660_ELTORITO_BOOT_MEDIA_TYPE_MASK)
+            {
+                uint64_t cbImage;
+                rc = RTFsIsoMakerObjQueryDataSize(pOpts->hIsoMaker, idxImageObj, &cbImage);
+                if (RT_FAILURE(rc))
+                    return rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTFsIsoMakerObjGetDataSize failed on entry #%u: %Rrc\n",
+                                                  idxBootCat, rc);
+                if (cbImage == 1228800)
+                    pBootCatEntry->u.Section.bBootMediaType = ISO9660_ELTORITO_BOOT_MEDIA_TYPE_FLOPPY_1_2_MB;
+                else if (cbImage <= 1474560)
+                    pBootCatEntry->u.Section.bBootMediaType = ISO9660_ELTORITO_BOOT_MEDIA_TYPE_FLOPPY_1_44_MB;
+                else if (cbImage <= 2949120)
+                    pBootCatEntry->u.Section.bBootMediaType = ISO9660_ELTORITO_BOOT_MEDIA_TYPE_FLOPPY_2_88_MB;
+                else
+                    pBootCatEntry->u.Section.bBootMediaType = ISO9660_ELTORITO_BOOT_MEDIA_TYPE_HARD_DISK;
+            }
+        }
+
+    /*
+     * Add the boot catalog entries.
+     */
+    pBootCatEntry = &pOpts->aBootCatEntries[0];
+    for (uint32_t idxBootCat = 0; idxBootCat < pOpts->cBootCatEntries; idxBootCat++, pBootCatEntry++)
+        switch (pBootCatEntry->enmType)
+        {
+            case RTFSISOMKCMDELTORITOENTRY::kEntryType_Validation:
+                Assert(idxBootCat == 0);
+                rc = RTFsIsoMakerBootCatSetValidationEntry(pOpts->hIsoMaker, pBootCatEntry->u.Validation.idPlatform,
+                                                           pBootCatEntry->u.Validation.pszString);
+                if (RT_FAILURE(rc))
+                    return rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTFsIsoMakerBootCatSetValidationEntry failed: %Rrc\n", rc);
+                break;
+
+            case RTFSISOMKCMDELTORITOENTRY::kEntryType_Default:
+            case RTFSISOMKCMDELTORITOENTRY::kEntryType_Section:
+                Assert(pBootCatEntry->enmType == RTFSISOMKCMDELTORITOENTRY::kEntryType_Default ? idxBootCat == 1 : idxBootCat > 2);
+                rc = RTFsIsoMakerBootCatSetSectionEntry(pOpts->hIsoMaker, idxBootCat,
+                                                        pBootCatEntry->u.Section.idxImageObj,
+                                                        pBootCatEntry->u.Section.bBootMediaType,
+                                                        pBootCatEntry->u.Section.bSystemType,
+                                                        pBootCatEntry->u.Section.fBootable,
+                                                        pBootCatEntry->u.Section.uLoadSeg,
+                                                        pBootCatEntry->u.Section.cSectorsToLoad);
+                if (RT_FAILURE(rc))
+                    return rtFsIsoMakerCmdErrorRc(pOpts, rc, "RTFsIsoMakerBootCatSetSectionEntry failed on entry #%u: %Rrc\n",
+                                                  idxBootCat, rc);
+                break;
+
+            case RTFSISOMKCMDELTORITOENTRY::kEntryType_SectionHeader:
+            {
+                uint32_t cEntries = 1;
+                while (   idxBootCat + cEntries < pOpts->cBootCatEntries
+                       && pBootCatEntry[cEntries].enmType != RTFSISOMKCMDELTORITOENTRY::kEntryType_SectionHeader)
+                    cEntries++;
+                cEntries--;
+
+                Assert(idxBootCat > 1);
+                rc = RTFsIsoMakerBootCatSetSectionHeaderEntry(pOpts->hIsoMaker, idxBootCat, cEntries,
+                                                              pBootCatEntry->u.SectionHeader.idPlatform,
+                                                              pBootCatEntry->u.SectionHeader.pszString);
+                if (RT_FAILURE(rc))
+                    return rtFsIsoMakerCmdErrorRc(pOpts, rc,
+                                                  "RTFsIsoMakerBootCatSetSectionHeaderEntry failed on entry #%u: %Rrc\n",
+                                                  idxBootCat, rc);
+                break;
+            }
+
+            default:
+                AssertFailedReturn(VERR_INTERNAL_ERROR_3);
+        }
+
+    return VINF_SUCCESS;
+}
+
+
+/**
+ * Deals with: --eltorito-new-entry, --eltorito-alt-boot
+ *
+ * This operates on the current eltorito boot catalog entry.
+ *
+ * @returns IPRT status code
+ * @param   pOpts               The ISO maker command instance.
+ */
+static int rtFsIsoMakerCmdOptEltoritoNewEntry(PRTFSISOMAKERCMDOPTS pOpts)
+{
+    uint32_t idxBootCat;
+    return rtFsIsoMakerCmdOptEltoritoEnsureSectionEntry(pOpts, true /*fForceNew*/, &idxBootCat);
+}
+
 
 
 /**
@@ -1161,6 +1908,8 @@ RTDECL(int) RTFsIsoMakerCmdEx(unsigned cArgs, char **papszArgs, PRTVFSFILE phVfs
     Opts.fDstNamespaces         = RTFSISOMAKERCMDNAME_MAJOR_MASK;
     if (phVfsFile)
         *phVfsFile = NIL_RTVFSFILE;
+    for (uint32_t i = 0; i < RT_ELEMENTS(Opts.aBootCatEntries); i++)
+        Opts.aBootCatEntries[i].u.Section.idxImageObj = UINT32_MAX;
 
     /* Setup option parsing. */
     RTGETOPTSTATE GetState;
@@ -1195,6 +1944,79 @@ RTDECL(int) RTFsIsoMakerCmdEx(unsigned cArgs, char **papszArgs, PRTVFSFILE phVfs
              */
             case RTFSISOMAKERCMD_OPT_NAME_SETUP:
                 rc = rtFsIsoMakerCmdOptNameSetup(&Opts, ValueUnion.psz);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_IPRT_ISO_MAKER_FILE_MARKER:
+                /* ignored */
+                break;
+
+            /*
+             * Joliet related options.
+             */
+            case RTFSISOMAKERCMD_OPT_NO_JOLIET:
+                rc = RTFsIsoMakerSetJolietUcs2Level(Opts.hIsoMaker, 0);
+                if (RT_FAILURE(rc))
+                    rc = rtFsIsoMakerCmdErrorRc(&Opts, rc, "Failed to disable joliet: %Rrc", rc);
+                break;
+
+
+            /*
+             * Boot related options.
+             */
+            case 'G': /* --generic-boot <file> */
+                rc = rtFsIsoMakerCmdOptGenericBoot(&Opts, ValueUnion.psz);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_ADD_IMAGE:
+                rc = rtFsIsoMakerCmdOptEltoritoAddImage(&Opts, ValueUnion.psz);
+                break;
+
+            case 'b': /* --eltorito-boot <boot.img> */
+                rc = rtFsIsoMakerCmdOptEltoritoBoot(&Opts, ValueUnion.psz);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_NEW_ENTRY:
+                rc = rtFsIsoMakerCmdOptEltoritoNewEntry(&Opts);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_PLATFORM_ID:
+                rc = rtFsIsoMakerCmdOptEltoritoPlatformId(&Opts, ValueUnion.psz);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_NO_BOOT:
+                rc = rtFsIsoMakerCmdOptEltoritoSetNotBootable(&Opts);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_12:
+                rc = rtFsIsoMakerCmdOptEltoritoSetMediaType(&Opts, ISO9660_ELTORITO_BOOT_MEDIA_TYPE_FLOPPY_1_2_MB);
+                break;
+            case RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_144:
+                rc = rtFsIsoMakerCmdOptEltoritoSetMediaType(&Opts, ISO9660_ELTORITO_BOOT_MEDIA_TYPE_FLOPPY_1_44_MB);
+                break;
+            case RTFSISOMAKERCMD_OPT_ELTORITO_FLOPPY_288:
+                rc = rtFsIsoMakerCmdOptEltoritoSetMediaType(&Opts, ISO9660_ELTORITO_BOOT_MEDIA_TYPE_FLOPPY_2_88_MB);
+                break;
+            case RTFSISOMAKERCMD_OPT_ELTORITO_HARD_DISK_BOOT:
+                rc = rtFsIsoMakerCmdOptEltoritoSetMediaType(&Opts, ISO9660_ELTORITO_BOOT_MEDIA_TYPE_HARD_DISK);
+                break;
+            case RTFSISOMAKERCMD_OPT_ELTORITO_NO_EMULATION_BOOT:
+                rc = rtFsIsoMakerCmdOptEltoritoSetMediaType(&Opts, ISO9660_ELTORITO_BOOT_MEDIA_TYPE_NO_EMULATION);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_LOAD_SEG:
+                rc = rtFsIsoMakerCmdOptEltoritoSetLoadSegment(&Opts, ValueUnion.u16);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_LOAD_SIZE:
+                rc = rtFsIsoMakerCmdOptEltoritoSetLoadSectorCount(&Opts, ValueUnion.u16);
+                break;
+
+            case RTFSISOMAKERCMD_OPT_ELTORITO_INFO_TABLE:
+                rc = rtFsIsoMakerCmdOptEltoritoEnableBootInfoTablePatching(&Opts);
+                break;
+
+            case 'c': /* --boot-catalog <cd-path> */
+                rc = rtFsIsoMakerCmdOptEltoritoSetBootCatalogPath(&Opts, ValueUnion.psz);
                 break;
 
 
@@ -1245,6 +2067,12 @@ RTDECL(int) RTFsIsoMakerCmdEx(unsigned cArgs, char **papszArgs, PRTVFSFILE phVfs
         else if (!Opts.pszOutFile && !Opts.fVirtualImageMaker)
             rc = rtFsIsoMakerCmdErrorRc(&Opts, VERR_INVALID_PARAMETER, "No output file specified (--output <file>)");
     }
+
+    /*
+     * Final actions.
+     */
+    if (RT_SUCCESS(rc))
+        rc = rtFsIsoMakerCmdOptEltoritoCommitBootCatalog(&Opts);
     if (RT_SUCCESS(rc))
     {
         /*

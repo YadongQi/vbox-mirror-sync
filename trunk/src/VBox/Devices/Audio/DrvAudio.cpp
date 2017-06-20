@@ -137,6 +137,12 @@ static const char *drvAudioGetConfStr(PCFGMNODE pCfgHandle, const char *pszKey,
 
 # endif /* unused */
 
+#ifdef VBOX_AUDIO_DEBUG_DUMP_PCM_DATA
+static char *drvAudioDbgGetFileNameA(PDRVAUDIO pThis, const char *pszPath, const char *pszSuffix);
+static void  drvAudioDbgPCMDelete(PDRVAUDIO pThis, const char *pszPath, const char *pszSuffix);
+static void  drvAudioDbgPCMDump(PDRVAUDIO pThis, const char *pszPath, const char *pszSuffix, const void *pvData, size_t cbData);
+#endif
+
 #ifdef LOG_ENABLED
 /**
  * Converts an audio stream status to a string.
@@ -933,18 +939,13 @@ static DECLCALLBACK(int) drvAudioStreamWrite(PPDMIAUDIOCONNECTOR pInterface, PPD
                   ("Writing to disabled guest output stream \"%s\" not possible (status is %s, host status %s)\n",
                    pGstStream->szName, pszGstSts, pszHstSts));
 #endif
-        pGstStream->Out.tsLastWriteMS = RTTimeMilliTS();
-
-        if (!AudioMixBufFreeBytes(&pGstStream->MixBuf))
-        {
-            LogRel2(("Audio: Guest stream '%s' full, expect stuttering audio output\n", pGstStream->szName));
-
-#ifdef DEBUG_andy
-            AssertMsgFailed(("[%s] Failed because guest stream full (guest status %s, host status %s): cbBuf=%RU32\n",
-                             pGstStream->szName, pszGstSts, pszHstSts, cbBuf));
-#endif
+        const uint32_t cbFree = AudioMixBufFreeBytes(&pGstStream->MixBuf);
+        if (!cbFree) /* No free guest side buffer space, bail out. */
             break;
-        }
+
+        /* Do not attempt to write more than the guest side currently can handle. */
+        if (cbBuf > cbFree)
+            cbBuf = cbFree;
 
         uint32_t csWritten = 0;
         rc = AudioMixBufWriteCirc(&pGstStream->MixBuf, pvBuf, cbBuf, &csWritten);
@@ -962,6 +963,10 @@ static DECLCALLBACK(int) drvAudioStreamWrite(PPDMIAUDIOCONNECTOR pInterface, PPD
             AssertMsgFailed(("[%s] Write failed (guest status %s, host status %s): cbBuf=%RU32, csWritten=%RU32, rc=%Rrc\n",
                              pGstStream->szName, pszGstSts, pszHstSts, cbBuf, csWritten, rc));
         }
+#endif
+
+#ifdef VBOX_AUDIO_DEBUG_DUMP_PCM_DATA
+        drvAudioDbgPCMDump(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "StreamWrite.pcm", pvBuf, cbBuf);
 #endif
 
 #ifdef VBOX_WITH_STATISTICS
@@ -1315,6 +1320,10 @@ static int drvAudioStreamPlayNonInterleaved(PDRVAUDIO pThis,
                 if (RT_FAILURE(rc))
                     break;
 
+#ifdef VBOX_AUDIO_DEBUG_DUMP_PCM_DATA
+                drvAudioDbgPCMDump(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "PlayNonInterleaved.pcm",
+                                   auBuf, cbPlayed);
+#endif
                 AssertMsg(cbPlayed <= cbRead, ("Played more than available (%RU32 available but got %RU32)\n", cbRead, cbPlayed));
                 AssertMsg(cbPlayed % 2 == 0,
                           ("Backend for stream '%s' returned uneven played bytes count (csRead=%RU32, cbPlayed=%RU32)\n",
@@ -1547,6 +1556,14 @@ static DECLCALLBACK(int) drvAudioStreamPlay(PPDMIAUDIOCONNECTOR pInterface,
     return rc;
 }
 
+/**
+ * Captures non-interleaved input from a host stream.
+ *
+ * @returns IPRT status code.
+ * @param   pThis               Driver instance.
+ * @param   pHstStream          Host stream to capture from.
+ * @param   pcsCaptured         Number of (host) audio samples captured. Optional.
+ */
 static int drvAudioStreamCaptureNonInterleaved(PDRVAUDIO pThis, PPDMAUDIOSTREAM pHstStream, uint32_t *pcsCaptured)
 {
     AssertPtrReturn(pThis,      VERR_INVALID_POINTER);
@@ -1595,6 +1612,10 @@ static int drvAudioStreamCaptureNonInterleaved(PDRVAUDIO pThis, PPDMAUDIOSTREAM 
         }
         else if (cbCaptured)
         {
+#ifdef VBOX_AUDIO_DEBUG_DUMP_PCM_DATA
+            drvAudioDbgPCMDump(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "CaptureNonInterleaved.pcm",
+                               auBuf, cbCaptured);
+#endif
             Assert(cbCaptured <= cbBuf);
             if (cbCaptured > cbBuf) /* Paranoia. */
                 cbCaptured = (uint32_t)cbBuf;
@@ -1625,6 +1646,18 @@ static int drvAudioStreamCaptureNonInterleaved(PDRVAUDIO pThis, PPDMAUDIOSTREAM 
     return rc;
 }
 
+/**
+ * Captures raw input from a host stream.
+ * Raw input means that the backend directly operates on PDMAUDIOSAMPLE structs without
+ * no data layout processing done in between.
+ *
+ * Needed for e.g. the VRDP audio backend (in Main).
+ *
+ * @returns IPRT status code.
+ * @param   pThis               Driver instance.
+ * @param   pHstStream          Host stream to capture from.
+ * @param   pcsCaptured         Number of (host) audio samples captured. Optional.
+ */
 static int drvAudioStreamCaptureRaw(PDRVAUDIO pThis, PPDMAUDIOSTREAM pHstStream, uint32_t *pcsCaptured)
 {
     AssertPtrReturn(pThis,      VERR_INVALID_POINTER);
@@ -1644,24 +1677,26 @@ static int drvAudioStreamCaptureRaw(PDRVAUDIO pThis, PPDMAUDIOSTREAM pHstStream,
 
     for (;;)
     {
-        uint32_t csReadable = pThis->pHostDrvAudio->pfnStreamGetReadable(pThis->pHostDrvAudio, pHstStream->pvBackend);
-        if (!csReadable)
+        uint32_t cbReadable = pThis->pHostDrvAudio->pfnStreamGetReadable(pThis->pHostDrvAudio, pHstStream->pvBackend);
+        if (!cbReadable) /* Nothing to read on the backend side? Bail out. */
             break;
 
-        uint32_t csFree = AudioMixBufFree(&pHstStream->MixBuf);
-        if (!csFree)
+        const uint32_t cbFree = AudioMixBufFreeBytes(&pHstStream->MixBuf);
+        if (!cbFree) /* No space left in the host stream? */
             break;
 
-        if (csFree < csReadable) /* More data captured than we can read? */
-        {
-            /** @todo Warn? */
-        }
+        if (cbReadable > cbFree) /* Don't capture more than the host stream currently can hold. */
+            cbReadable = cbFree;
 
         PPDMAUDIOSAMPLE paSamples;
         uint32_t csWritable;
-        rc = AudioMixBufPeekMutable(&pHstStream->MixBuf, csReadable, &paSamples, &csWritable);
-        if (RT_FAILURE(rc))
+        rc = AudioMixBufPeekMutable(&pHstStream->MixBuf, AUDIOMIXBUF_B2S(&pHstStream->MixBuf, cbReadable),
+                                    &paSamples, &csWritable);
+        if (   RT_FAILURE(rc)
+            || !csWritable)
+        {
             break;
+        }
 
         uint32_t csCaptured;
         rc = pThis->pHostDrvAudio->pfnStreamCapture(pThis->pHostDrvAudio, pHstStream->pvBackend,
@@ -1772,13 +1807,20 @@ static DECLCALLBACK(int) drvAudioStreamCapture(PPDMIAUDIOCONNECTOR pInterface,
 
         if (RT_SUCCESS(rc))
         {
+            Log3Func(("[%s] %RU32 samples captured, rc=%Rrc\n", pHstStream->szName, csCaptured, rc));
+
 #ifdef VBOX_WITH_STATISTICS
             STAM_COUNTER_ADD(&pThis->Stats.TotalSamplesIn,        csCaptured);
             STAM_COUNTER_ADD(&pHstStream->In.StatSamplesCaptured, csCaptured);
 #endif
         }
-        else
+        else if (RT_UNLIKELY(RT_FAILURE(rc)))
+        {
+#ifdef DEBUG_andy
+            AssertFailed();
+#endif
             LogRel2(("Audio: Capturing stream '%s' failed with %Rrc\n", pHstStream->szName, rc));
+        }
 
     } while (0);
 
@@ -2059,6 +2101,80 @@ static int drvAudioDevicesEnumerateInternal(PDRVAUDIO pThis, bool fLog, PPDMAUDI
 }
 #endif /* VBOX_WITH_AUDIO_ENUM */
 
+#ifdef VBOX_AUDIO_DEBUG_DUMP_PCM_DATA
+/**
+ * Returns an unique file name for this given audio connector instance.
+ *
+ * @return  Allocated file name. Must be free'd using RTStrFree().
+ * @param   pThis               Driver instance.
+ * @param   pszPath             Path name of the file to delete. The path must exist.
+ * @param   pszSuffix           File name suffix to use.
+ */
+static char *drvAudioDbgGetFileNameA(PDRVAUDIO pThis, const char *pszPath, const char *pszSuffix)
+{
+    char szFileName[64];
+    RTStrPrintf(szFileName, sizeof(szFileName), "drvAudio%RU32-%s", pThis->pDrvIns->iInstance, pszSuffix);
+
+    char szFilePath[RTPATH_MAX];
+    int rc2 = RTStrCopy(szFilePath, sizeof(szFilePath), pszPath);
+    AssertRC(rc2);
+    rc2 = RTPathAppend(szFilePath, sizeof(szFilePath), szFileName);
+    AssertRC(rc2);
+
+    return RTStrDup(szFilePath);
+}
+
+/**
+ * Deletes a PCM audio dump file.
+ *
+ * @param   pThis               Driver instance.
+ * @param   pszPath             Path name of the file to delete. The path must exist.
+ * @param   pszSuffix           File name suffix to use.
+ */
+static void drvAudioDbgPCMDelete(PDRVAUDIO pThis, const char *pszPath, const char *pszSuffix)
+{
+    char *pszFileName = drvAudioDbgGetFileNameA(pThis, pszPath, pszSuffix);
+    AssertPtr(pszFileName);
+
+    RTFileDelete(pszFileName);
+
+    RTStrFree(pszFileName);
+}
+
+/**
+ * Dumps (raw) PCM audio data into a file by appending.
+ * Every driver instance will have an own prefix to not introduce writing races.
+ *
+ * @param   pThis               Driver instance.
+ * @param   pszPath             Path name to save file to. The path must exist.
+ * @param   pszSuffix           File name suffix to use.
+ * @param   pvData              Pointer to PCM data to dump.
+ * @param   cbData              Size (in bytes) of PCM data to dump.
+ */
+static void drvAudioDbgPCMDump(PDRVAUDIO pThis,
+                               const char *pszPath, const char *pszSuffix, const void *pvData, size_t cbData)
+{
+    if (!pvData || !cbData)
+        return;
+
+    AssertPtr(pThis->pDrvIns);
+
+    char *pszFileName = drvAudioDbgGetFileNameA(pThis, pszPath, pszSuffix);
+    AssertPtr(pszFileName);
+
+    RTFILE fh;
+    int rc2 = RTFileOpen(&fh, pszFileName, RTFILE_O_OPEN_CREATE | RTFILE_O_APPEND | RTFILE_O_WRITE | RTFILE_O_DENY_NONE);
+    AssertRC(rc2);
+    if (RT_SUCCESS(rc2))
+    {
+        RTFileWrite(fh, pvData, cbData, NULL);
+        RTFileClose(fh);
+    }
+
+    RTStrFree(pszFileName);
+}
+#endif /* VBOX_AUDIO_DEBUG_DUMP_PCM_DATA */
+
 /**
  * Initializes the host backend and queries its initial configuration.
  * If the host backend fails, VERR_AUDIO_BACKEND_INIT_FAILED will be returned.
@@ -2197,13 +2313,13 @@ static DECLCALLBACK(int) drvAudioStreamRead(PPDMIAUDIOCONNECTOR pInterface, PPDM
     AssertPtrReturn(pStream, VERR_INVALID_POINTER);
     AssertPtrReturn(pvBuf,   VERR_INVALID_POINTER);
     AssertReturn(cbBuf,      VERR_INVALID_PARAMETER);
-    /* pcbWritten is optional. */
+    /* pcbRead is optional. */
 
     AssertMsg(pStream->enmDir == PDMAUDIODIR_IN,
               ("Stream '%s' is not an input stream and therefore cannot be read from (direction is 0x%x)\n",
                pStream->szName, pStream->enmDir));
 
-    uint32_t cbRead = 0;
+    uint32_t cbReadTotal = 0;
 
     int rc = RTCritSectEnter(&pThis->CritSect);
     if (RT_FAILURE(rc))
@@ -2229,31 +2345,51 @@ static DECLCALLBACK(int) drvAudioStreamRead(PPDMIAUDIOCONNECTOR pInterface, PPDM
         PPDMAUDIOSTREAM pGstStream = pHstStream->pPair;
         AssertPtr(pGstStream);
 
-        pGstStream->In.tsLastReadMS = RTTimeMilliTS();
-
         /*
          * Read from the parent buffer (that is, the guest buffer) which
          * should have the audio data in the format the guest needs.
          */
-        uint32_t cRead;
-        rc = AudioMixBufReadCirc(&pGstStream->MixBuf, pvBuf, cbBuf, &cRead);
-        if (RT_SUCCESS(rc))
+        uint32_t cReadTotal = 0;
+
+        uint32_t cToRead = RT_MIN(AUDIOMIXBUF_B2S(&pGstStream->MixBuf, cbBuf), AudioMixBufUsed(&pGstStream->MixBuf));
+        while (cToRead)
         {
-            if (cRead)
-            {
-                cbRead = AUDIOMIXBUF_S2B(&pGstStream->MixBuf, cRead);
+            uint32_t cRead;
+            rc = AudioMixBufReadCirc(&pGstStream->MixBuf, (uint8_t *)pvBuf + AUDIOMIXBUF_S2B(&pGstStream->MixBuf, cReadTotal),
+                                     AUDIOMIXBUF_S2B(&pGstStream->MixBuf, cToRead), &cRead);
+            if (RT_FAILURE(rc))
+                break;
+
+#if defined (VBOX_WITH_STATISTICS) || defined (VBOX_AUDIO_DEBUG_DUMP_PCM_DATA)
+            const uint32_t cbRead = AUDIOMIXBUF_S2B(&pGstStream->MixBuf, cRead);
+#endif
 
 #ifdef VBOX_WITH_STATISTICS
-                STAM_COUNTER_ADD(&pThis->Stats.TotalBytesRead,       cbRead);
-                STAM_COUNTER_ADD(&pGstStream->In.StatBytesTotalRead, cbRead);
+            STAM_COUNTER_ADD(&pThis->Stats.TotalBytesRead,       cbRead);
+            STAM_COUNTER_ADD(&pGstStream->In.StatBytesTotalRead, cbRead);
 #endif
-                AudioMixBufFinish(&pGstStream->MixBuf, cRead);
-            }
+            Assert(cToRead >= cRead);
+            cToRead -= cRead;
+
+            cReadTotal += cRead;
+        }
+
+        if (cReadTotal)
+        {
+#ifdef VBOX_AUDIO_DEBUG_DUMP_PCM_DATA
+            drvAudioDbgPCMDump(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "StreamRead.pcm",
+                               pvBuf, AUDIOMIXBUF_S2B(&pGstStream->MixBuf, cReadTotal));
+#endif
+            AudioMixBufFinish(&pGstStream->MixBuf, cReadTotal);
+
+            pGstStream->In.tsLastReadMS = RTTimeMilliTS();
+
+            cbReadTotal = AUDIOMIXBUF_S2B(&pGstStream->MixBuf, cReadTotal);
         }
 
     } while (0);
 
-    Log3Func(("[%s] cbRead=%RU32, rc=%Rrc\n", pStream->szName, cbRead, rc));
+    Log3Func(("[%s] cbReadTotal=%RU32, rc=%Rrc\n", pStream->szName, cbReadTotal, rc));
 
     int rc2 = RTCritSectLeave(&pThis->CritSect);
     if (RT_SUCCESS(rc))
@@ -2262,7 +2398,7 @@ static DECLCALLBACK(int) drvAudioStreamRead(PPDMIAUDIOCONNECTOR pInterface, PPDM
     if (RT_SUCCESS(rc))
     {
         if (pcbRead)
-            *pcbRead = cbRead;
+            *pcbRead = cbReadTotal;
     }
 
     return rc;
@@ -3098,6 +3234,13 @@ static DECLCALLBACK(int) drvAudioConstruct(PPDMDRVINS pDrvIns, PCFGMNODE pCfg, u
                                      STAMUNIT_NS_PER_CALL, "Profiling of input data processing.");
         PDMDrvHlpSTAMRegProfileAdvEx(pDrvIns, &pThis->Stats.DelayOut,          "DelayOut",
                                      STAMUNIT_NS_PER_CALL, "Profiling of output data processing.");
+#endif
+
+#ifdef VBOX_AUDIO_DEBUG_DUMP_PCM_DATA
+        drvAudioDbgPCMDelete(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "StreamRead.pcm");
+        drvAudioDbgPCMDelete(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "StreamWrite.pcm");
+        drvAudioDbgPCMDelete(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "PlayNonInterleaved.pcm");
+        drvAudioDbgPCMDelete(pThis, VBOX_AUDIO_DEBUG_DUMP_PCM_DATA_PATH, "CaptureNonInterleaved.pcm");
 #endif
     }
 

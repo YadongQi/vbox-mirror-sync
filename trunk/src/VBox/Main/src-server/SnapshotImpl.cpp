@@ -116,7 +116,7 @@ HRESULT Snapshot::init(VirtualBox *aVirtualBox,
 {
     LogFlowThisFunc(("uuid=%s aParent->uuid=%s\n", aId.toString().c_str(), (aParent) ? aParent->m->uuid.toString().c_str() : ""));
 
-    ComAssertRet(!aId.isZero() && aId.isValid() && !aName.isEmpty() && aMachine, E_INVALIDARG);
+    ComAssertRet(!aId.isZero() && aId.isValid() && aMachine, E_INVALIDARG);
 
     /* Enclose the state transition NotReady->InInit->Ready */
     AutoInitSpan autoInitSpan(this);
@@ -2110,6 +2110,7 @@ void SessionMachine::i_restoreSnapshotHandler(RestoreSnapshotTask &task)
     }
 
     HRESULT rc = S_OK;
+    Guid snapshotId;
 
     try
     {
@@ -2148,6 +2149,9 @@ void SessionMachine::i_restoreSnapshotHandler(RestoreSnapshotTask &task)
 
             /* remember the timestamp of the snapshot we're restoring from */
             snapshotTimeStamp = task.m_pSnapshot->i_getTimeStamp();
+
+            // save the snapshot ID (paranoia, here we hold the lock)
+            snapshotId = task.m_pSnapshot->i_getId();
 
             ComPtr<SnapshotMachine> pSnapshotMachine(task.m_pSnapshot->i_getSnapshotMachine());
 
@@ -2332,7 +2336,7 @@ void SessionMachine::i_restoreSnapshotHandler(RestoreSnapshotTask &task)
     task.m_pProgress->i_notifyComplete(rc);
 
     if (SUCCEEDED(rc))
-        mParent->i_onSnapshotRestored(mData->mUuid, Guid());
+        mParent->i_onSnapshotRestored(mData->mUuid, snapshotId);
 
     LogFlowThisFunc(("Done restoring snapshot (rc=%08X)\n", rc));
 
