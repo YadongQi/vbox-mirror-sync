@@ -30,12 +30,12 @@ VBOX_HDRS_CPP_FEATURES := \
 	VBox/HostServices/Service.h \
 	VBox/GuestHost/GuestControl.h \
 	VBox/GuestHost/DragAndDrop.h \
-       VBox/dbus.h \
+	VBox/dbus.h \
 	VBox/VBoxCrHgsmi.h \
 	VBox/VBoxGuestLibSharedFoldersInline.h \
-       VBox/VBoxPktDmp.h \
+	VBox/VBoxPktDmp.h \
 	VBox/VBoxUhgsmi.h \
-       iprt/cpp/%
+	iprt/cpp/%
 
 # Omit headers that are C++ and ring-3.
 VBOX_HDRS_R3_CPP := \
@@ -70,6 +70,7 @@ VBOX_HDRS_R3_ONLY := \
 	VBox/vmm/uvm.h \
 	VBox/vscsi.h \
 	VBox/ExtPack/% \
+	VBox/GuestHost/SharedClipboard-win.h \
 	VBox/GuestHost/DragAndDrop.h \
 	VBox/HostServices/Service.h \
 	iprt/win/% \
@@ -105,10 +106,11 @@ VBOX_HDRS_OMIT := \
 	VBox/VDEPlugSymDefs.h \
 	VBox/VBoxNetCmn-win.h \
 	$(if-expr "$(KBUILD_TARGET)" != "win", \
+		VBox/com/microatl.h \
+		VBox/GuestHost/SharedClipboard-win.h \
+		VBox/usblib-win.h \
 		VBox/VBoxDrvCfg-win.h \
 		VBox/VBoxNetCfg-win.h \
-		VBox/usblib-win.h \
-		VBox/com/microatl.h \
 	,$(VBOX_HDRS_GCC_ONLY)) \
 	\
 	VBox/dbus-calls.h \

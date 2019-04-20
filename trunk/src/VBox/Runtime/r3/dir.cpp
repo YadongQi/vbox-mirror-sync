@@ -32,6 +32,7 @@
 #include <iprt/dir.h>
 #include "internal/iprt.h"
 
+#include <iprt/alloca.h>
 #include <iprt/assert.h>
 #include <iprt/file.h>
 #include <iprt/err.h>
@@ -525,6 +526,9 @@ static int rtDirOpenCommon(RTDIR *phDir, const char *pszPath, const char *pszFil
      * The purpose of this exercise to have the abs path around
      * for querying extra information about the objects we list.
      * As a sideeffect we also validate the path here.
+     *
+     * Note! The RTDIR_F_NO_ABS_PATH mess is there purely for allowing us to
+     *       work around PATH_MAX using CWD on linux and other unixy systems.
      */
     char  *pszAbsPath;
     size_t cbFilter;                    /* includes '\0' (thus cb and not cch). */
@@ -532,8 +536,6 @@ static int rtDirOpenCommon(RTDIR *phDir, const char *pszPath, const char *pszFil
     bool   fDirSlash = false;
     if (!pszFilter)
     {
-        /* Note! RTPathAbs currently strips trailing slashes, so we have
-           to inspect pszPath to figure it out. */
         if (*pszPath != '\0')
         {
             const char *pszLast = strchr(pszPath, '\0') - 1;
@@ -542,7 +544,19 @@ static int rtDirOpenCommon(RTDIR *phDir, const char *pszPath, const char *pszFil
         }
 
         cbFilter = cucFilter0 = 0;
-        pszAbsPath = RTPathAbsDup(pszPath);
+        if (!(fFlags & RTDIR_F_NO_ABS_PATH))
+            pszAbsPath = RTPathAbsExDup(NULL, pszPath, RTPATHABS_F_ENSURE_TRAILING_SLASH);
+        else
+        {
+            size_t cchTmp = strlen(pszPath);
+            pszAbsPath = RTStrAlloc(cchTmp + 2);
+            if (pszAbsPath)
+            {
+                memcpy(pszAbsPath, pszPath, cchTmp);
+                pszAbsPath[cchTmp] = RTPATH_SLASH;
+                pszAbsPath[cchTmp + 1 - fDirSlash] = '\0';
+            }
+        }
     }
     else
     {
@@ -556,17 +570,26 @@ static int rtDirOpenCommon(RTDIR *phDir, const char *pszPath, const char *pszFil
             if (!pszTmp)
                 return VERR_NO_MEMORY;
             pszTmp[pszFilter - pszPath] = '\0';
-            pszAbsPath = RTPathAbsDup(pszTmp);
-            RTStrFree(pszTmp);
+            if (!(fFlags & RTDIR_F_NO_ABS_PATH))
+            {
+                pszAbsPath = RTPathAbsExDup(NULL, pszTmp, RTPATHABS_F_ENSURE_TRAILING_SLASH);
+                RTStrFree(pszTmp);
+            }
+            else
+            {
+                pszAbsPath = pszTmp;
+                RTPathEnsureTrailingSeparator(pszAbsPath, strlen(pszPath) + 1);
+            }
         }
+        else if (!(fFlags & RTDIR_F_NO_ABS_PATH))
+            pszAbsPath = RTPathAbsExDup(NULL, ".", RTPATHABS_F_ENSURE_TRAILING_SLASH);
         else
-            pszAbsPath = RTPathAbsDup(".");
+            pszAbsPath = RTStrDup("." RTPATH_SLASH_STR);
         fDirSlash = true;
     }
     if (!pszAbsPath)
         return VERR_NO_MEMORY;
-
-
+    Assert(strchr(pszAbsPath, '\0')[-1] == RTPATH_SLASH);
 
     /*
      * Allocate and initialize the directory handle.
@@ -575,12 +598,11 @@ static int rtDirOpenCommon(RTDIR *phDir, const char *pszPath, const char *pszFil
      * thus the horrible ugliness here. Solaris uses d_name[1] for instance.
      */
     size_t const cchAbsPath      = strlen(pszAbsPath);
-    size_t const cchAbsPathExtra = !RTPATH_IS_SEP(pszAbsPath[cchAbsPath - 1]) ? 1 : 0; /* add trailing '/' if missing */
     size_t const cbDir           = rtDirNativeGetStructSize(pszAbsPath);
     size_t const cbAllocated     = cbDir
                                  + cucFilter0 * sizeof(RTUNICP)
                                  + cbFilter
-                                 + cchAbsPath + cchAbsPathExtra + 1 + 4;
+                                 + cchAbsPath + 1 + 4;
     PRTDIRINTERNAL pDir = (PRTDIRINTERNAL)RTMemAllocZ(cbAllocated);
     if (!pDir)
     {
@@ -626,11 +648,10 @@ static int rtDirOpenCommon(RTDIR *phDir, const char *pszPath, const char *pszFil
             pDir->pfnFilter = NULL;
             break;
     }
-    pDir->cchPath       = cchAbsPath + cchAbsPathExtra;
+    pDir->cchPath       = cchAbsPath;
     pDir->pszPath       = (char *)memcpy(pb, pszAbsPath, cchAbsPath);
-    pb[cchAbsPath]                   = RTPATH_SLASH;
-    pb[cchAbsPath + cchAbsPathExtra] = '\0';
-    Assert(pb - (uint8_t *)pDir + cchAbsPath + cchAbsPathExtra + 1 <= cbAllocated);
+    pb[cchAbsPath]      = '\0';
+    Assert(pb - (uint8_t *)pDir + cchAbsPath + 1 <= cbAllocated);
     pDir->pszName       = NULL;
     pDir->cchName       = 0;
     pDir->fFlags        = fFlags;
@@ -729,13 +750,25 @@ RTDECL(bool) RTDirIsValid(RTDIR hDir)
 
 RTDECL(int) RTDirFlushParent(const char *pszChild)
 {
-    char szPath[RTPATH_MAX];
-    int rc = RTStrCopy(szPath, sizeof(szPath), pszChild);
-    if (RT_SUCCESS(rc))
+    char        *pszPath;
+    char        *pszPathFree = NULL;
+    size_t const cchChild    = strlen(pszChild);
+    if (cchChild < RTPATH_MAX)
+        pszPath = (char *)alloca(cchChild + 1);
+    else
     {
-        RTPathStripFilename(szPath);
-        rc = RTDirFlush(szPath);
+        pszPathFree = pszPath = (char *)RTMemTmpAlloc(cchChild + 1);
+        if (!pszPath)
+            return VERR_NO_TMP_MEMORY;
     }
+    memcpy(pszPath, pszChild, cchChild);
+    pszPath[cchChild] = '\0';
+    RTPathStripFilename(pszPath);
+
+    int rc = RTDirFlush(pszPath);
+
+    if (pszPathFree)
+        RTMemTmpFree(pszPathFree);
     return rc;
 }
 

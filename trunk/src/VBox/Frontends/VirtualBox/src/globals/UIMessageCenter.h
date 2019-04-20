@@ -372,8 +372,13 @@ public:
     void cannotAssignCloudProfileParameter(const CCloudProfile &comProfile, QWidget *pParent = 0) const;
     void cannotCreateCloudClient(const CCloudProfile &comProfile, QWidget *pParent = 0) const;
     void cannotAcquireCloudClientParameter(const CCloudClient &comClient, QWidget *pParent = 0) const;
+    void cannotAcquireCloudClientParameter(const CProgress &comProgress, QWidget *pParent = 0) const;
     bool confirmCloudProfileRemoval(const QString &strName, QWidget *pParent = 0) const;
     bool confirmCloudProfilesImport(QWidget *pParent = 0) const;
+    void cannotAssignFormValue(const CBooleanFormValue &comValue, QWidget *pParent = 0) const;
+    void cannotAssignFormValue(const CStringFormValue &comValue, QWidget *pParent = 0) const;
+    void cannotAssignFormValue(const CChoiceFormValue &comValue, QWidget *pParent = 0) const;
+    void cannotAssignFormValue(const CProgress &comProgress, QWidget *pParent = 0) const;
 
     /* API: Wizards warnings: */
     bool confirmHardDisklessMachine(QWidget *pParent = 0) const;

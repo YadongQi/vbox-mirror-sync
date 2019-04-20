@@ -31,6 +31,7 @@
 #include "CCloudProfile.h"
 #include "CCloudProvider.h"
 #include "CCloudProviderManager.h"
+#include "CVirtualSystemDescriptionForm.h"
 
 /* Forward declarations: */
 class QLabel;
@@ -95,22 +96,26 @@ protected:
     QUuid sourceId() const;
     /** Returns profile name. */
     QString profileName() const;
+    /** Returns machine ID. */
+    QString machineId() const;
     /** Returns Cloud Profile object. */
     CCloudProfile profile() const;
-    /** Returns Cloud Client object. */
-    CCloudClient client() const;
+    /** Returns Virtual System Description Form object. */
+    CVirtualSystemDescriptionForm vsdForm() const;
 
     /** Holds whether default source should be Import from OCI. */
     bool  m_fImportFromOCIByDefault;
 
     /** Holds the Cloud Provider Manager reference. */
-    CCloudProviderManager  m_comCloudProviderManager;
+    CCloudProviderManager          m_comCloudProviderManager;
     /** Holds the Cloud Provider object reference. */
-    CCloudProvider         m_comCloudProvider;
+    CCloudProvider                 m_comCloudProvider;
     /** Holds the Cloud Profile object reference. */
-    CCloudProfile          m_comCloudProfile;
+    CCloudProfile                  m_comCloudProfile;
     /** Holds the Cloud Client object reference. */
-    CCloudClient           m_comCloudClient;
+    CCloudClient                   m_comCloudClient;
+    /** Holds the Virtual System Description Form object reference. */
+    CVirtualSystemDescriptionForm  m_comVSDForm;
 
     /** Holds the source layout instance. */
     QGridLayout *m_pSourceLayout;
@@ -122,6 +127,10 @@ protected:
     /** Holds the stacked layout instance. */
     QStackedLayout *m_pStackedLayout;
 
+    /** Holds the local container layout instance. */
+    QGridLayout             *m_pLocalContainerLayout;
+    /** Holds the file label instance. */
+    QLabel                  *m_pFileLabel;
     /** Holds the file selector instance. */
     UIEmptyFilePathSelector *m_pFileSelector;
 
@@ -148,7 +157,8 @@ class UIWizardImportAppPageBasic1 : public UIWizardPage, public UIWizardImportAp
     Q_PROPERTY(QString source READ source WRITE setSource);
     Q_PROPERTY(bool isSourceCloudOne READ isSourceCloudOne);
     Q_PROPERTY(CCloudProfile profile READ profile);
-    Q_PROPERTY(CCloudClient client READ client);
+    Q_PROPERTY(CVirtualSystemDescriptionForm vsdForm READ vsdForm);
+    Q_PROPERTY(QString machineId READ machineId);
 
 public:
 
@@ -172,6 +182,9 @@ protected:
     /** Performs page validation. */
     virtual bool validatePage() /* override */;
 
+    /** Updates page appearance. */
+    virtual void updatePageAppearance() /* override */;
+
 private slots:
 
     /** Handles import source change. */
@@ -185,8 +198,10 @@ private slots:
 
 private:
 
-    /** Holds the label instance. */
-    QIRichTextLabel *m_pLabel;
+    /** Holds the main label instance. */
+    QIRichTextLabel *m_pLabelMain;
+    /** Holds the description label instance. */
+    QIRichTextLabel *m_pLabelDescription;
 };
 
 #endif /* !FEQT_INCLUDED_SRC_wizards_importappliance_UIWizardImportAppPageBasic1_h */

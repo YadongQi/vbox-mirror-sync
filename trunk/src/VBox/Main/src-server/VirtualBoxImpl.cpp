@@ -125,6 +125,8 @@ std::map<com::Utf8Str, int> VirtualBox::sNatNetworkNameToRefCount;
 
 // static leaked (todo: find better place to free it.)
 RWLockHandle *VirtualBox::spMtxNatNetworkNameToRefCountLock;
+
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // CallbackEvent class
@@ -775,6 +777,10 @@ HRESULT VirtualBox::initMedia(const Guid &uuidRegistry,
         if (FAILED(rc)) return rc;
 
         rc = i_registerMedium(pHardDisk, &pHardDisk, treeLock);
+        // Avoid trouble with lock/refcount, before returning or not.
+        treeLock.release();
+        pHardDisk.setNull();
+        treeLock.acquire();
         if (FAILED(rc)) return rc;
     }
 
@@ -796,6 +802,10 @@ HRESULT VirtualBox::initMedia(const Guid &uuidRegistry,
         if (FAILED(rc)) return rc;
 
         rc = i_registerMedium(pImage, &pImage, treeLock);
+        // Avoid trouble with lock/refcount, before returning or not.
+        treeLock.release();
+        pImage.setNull();
+        treeLock.acquire();
         if (FAILED(rc)) return rc;
     }
 
@@ -817,6 +827,10 @@ HRESULT VirtualBox::initMedia(const Guid &uuidRegistry,
         if (FAILED(rc)) return rc;
 
         rc = i_registerMedium(pImage, &pImage, treeLock);
+        // Avoid trouble with lock/refcount, before returning or not.
+        treeLock.release();
+        pImage.setNull();
+        treeLock.acquire();
         if (FAILED(rc)) return rc;
     }
 
@@ -2141,14 +2155,14 @@ HRESULT VirtualBox::setExtraData(const com::Utf8Str &aKey,
     Utf8Str strOldValue;            // empty
     HRESULT rc = S_OK;
 
-    /* Because non-ASCII characters in aKey have caused problems in the settings
+    /* Because control characters in aKey have caused problems in the settings
      * they are rejected unless the key should be deleted. */
     if (!strValue.isEmpty())
     {
         for (size_t i = 0; i < strKey.length(); ++i)
         {
             char ch = strKey[i];
-            if (RT_C_IS_CNTRL(ch))
+            if (RTLocCIsCntrl(ch))
                 return E_INVALIDARG;
         }
     }
@@ -4929,7 +4943,7 @@ void VirtualBox::i_markRegistryModified(const Guid &uuid)
         if (SUCCEEDED(rc))
         {
             AutoCaller machineCaller(pMachine);
-            if (SUCCEEDED(machineCaller.rc()))
+            if (SUCCEEDED(machineCaller.rc()) && pMachine->i_isAccessible())
                 ASMAtomicIncU64(&pMachine->uRegistryNeedsSaving);
         }
     }

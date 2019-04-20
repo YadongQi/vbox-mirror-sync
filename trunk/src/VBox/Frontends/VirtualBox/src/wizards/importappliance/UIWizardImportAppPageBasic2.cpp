@@ -23,12 +23,14 @@
 /* GUI includes: */
 #include "QIRichTextLabel.h"
 #include "UIApplianceUnverifiedCertificateViewer.h"
+#include "UIMessageCenter.h"
 #include "UIWizardImportApp.h"
 #include "UIWizardImportAppPageBasic2.h"
 
 /* COM includes: */
 #include "CAppliance.h"
 #include "CCertificate.h"
+#include "CVirtualSystemDescriptionForm.h"
 
 
 /*********************************************************************************************************************************
@@ -67,6 +69,14 @@ UIWizardImportAppPageBasic2::UIWizardImportAppPageBasic2(const QString &strFileN
 
             /* Add into layout: */
             pMainLayout->addWidget(m_pApplianceWidget);
+        }
+
+        /* Create form editor widget: */
+        m_pFormEditor = new UIFormEditorWidget(this);
+        if (m_pFormEditor)
+        {
+            /* Add into layout: */
+            pMainLayout->addWidget(m_pFormEditor);
         }
 
         /* Create certificate label: */
@@ -128,59 +138,72 @@ void UIWizardImportAppPageBasic2::retranslateUi()
 
 void UIWizardImportAppPageBasic2::initializePage()
 {
-    /* Acquire appliance: */
-    CAppliance *pAppliance = m_pApplianceWidget->appliance();
+    /* Check whether there was cloud source selected: */
+    const bool fIsSourceCloudOne = field("isSourceCloudOne").toBool();
 
-    /* Check if pAppliance is alive. If not just return here.
-     * This prevents crashes when an invalid ova file is supllied: */
-    if (!pAppliance)
-    {
-        if (wizard())
-            wizard()->reject();
-        return;
-    }
+    /* Update widget visibility: */
+    m_pFormEditor->setVisible(fIsSourceCloudOne);
+    m_pApplianceWidget->setVisible(!fIsSourceCloudOne);
+    m_pCertLabel->setVisible(!fIsSourceCloudOne);
 
-    /* Acquire certificate: */
-    CCertificate comCertificate = pAppliance->GetCertificate();
-    if (comCertificate.isNull())
-        m_enmCertText = kCertText_Unsigned;
+    if (fIsSourceCloudOne)
+        m_pFormEditor->setVirtualSystemDescriptionForm(field("vsdForm").value<CVirtualSystemDescriptionForm>());
     else
     {
-        /* Pick a 'signed-by' name: */
-        m_strSignedBy = comCertificate.GetFriendlyName();
+        /* Acquire appliance: */
+        CAppliance *pAppliance = m_pApplianceWidget->appliance();
 
-        /* If trusted, just select the right message: */
-        if (comCertificate.GetTrusted())
+        /* Check if pAppliance is alive. If not just return here.
+         * This prevents crashes when an invalid ova file is supllied: */
+        if (!pAppliance)
         {
-            if (comCertificate.GetSelfSigned())
-                m_enmCertText = !comCertificate.GetExpired() ? kCertText_SelfSignedTrusted : kCertText_SelfSignedExpired;
-            else
-                m_enmCertText = !comCertificate.GetExpired() ? kCertText_IssuedTrusted     : kCertText_IssuedExpired;
+            if (wizard())
+                wizard()->reject();
+            return;
         }
+
+        /* Acquire certificate: */
+        CCertificate comCertificate = pAppliance->GetCertificate();
+        if (comCertificate.isNull())
+            m_enmCertText = kCertText_Unsigned;
         else
         {
-            /* Not trusted!  Must ask the user whether to continue in this case: */
-            m_enmCertText = comCertificate.GetSelfSigned() ? kCertText_SelfSignedUnverified : kCertText_IssuedUnverified;
+            /* Pick a 'signed-by' name: */
+            m_strSignedBy = comCertificate.GetFriendlyName();
 
-            /* Translate page early: */
-            retranslateUi();
+            /* If trusted, just select the right message: */
+            if (comCertificate.GetTrusted())
+            {
+                if (comCertificate.GetSelfSigned())
+                    m_enmCertText = !comCertificate.GetExpired() ? kCertText_SelfSignedTrusted : kCertText_SelfSignedExpired;
+                else
+                    m_enmCertText = !comCertificate.GetExpired() ? kCertText_IssuedTrusted     : kCertText_IssuedExpired;
+            }
+            else
+            {
+                /* Not trusted!  Must ask the user whether to continue in this case: */
+                m_enmCertText = comCertificate.GetSelfSigned() ? kCertText_SelfSignedUnverified : kCertText_IssuedUnverified;
 
-            /* Instantiate the dialog: */
-            QPointer<UIApplianceUnverifiedCertificateViewer> pDialog = new UIApplianceUnverifiedCertificateViewer(this, comCertificate);
-            AssertPtrReturnVoid(pDialog.data());
+                /* Translate page early: */
+                retranslateUi();
 
-            /* Show viewer in modal mode: */
-            const int iResultCode = pDialog->exec();
+                /* Instantiate the dialog: */
+                QPointer<UIApplianceUnverifiedCertificateViewer> pDialog = new UIApplianceUnverifiedCertificateViewer(this, comCertificate);
+                AssertPtrReturnVoid(pDialog.data());
 
-            /* Leave if viewer destroyed prematurely: */
-            if (!pDialog)
-                return;
-            /* Delete viewer finally: */
-            delete pDialog;
+                /* Show viewer in modal mode: */
+                const int iResultCode = pDialog->exec();
 
-            /* Dismiss the entire import-appliance wizard if user rejects certificate: */
-            if (iResultCode == QDialog::Rejected)
-                wizard()->reject();
+                /* Leave if viewer destroyed prematurely: */
+                if (!pDialog)
+                    return;
+                /* Delete viewer finally: */
+                delete pDialog;
+
+                /* Dismiss the entire import-appliance wizard if user rejects certificate: */
+                if (iResultCode == QDialog::Rejected)
+                    wizard()->reject();
+            }
         }
     }
 
@@ -194,6 +217,12 @@ void UIWizardImportAppPageBasic2::cleanupPage()
     m_pApplianceWidget->restoreDefaults();
     /* Call to base-class: */
     UIWizardPage::cleanupPage();
+}
+
+bool UIWizardImportAppPageBasic2::isComplete() const
+{
+    /* No importing for cloud source for now: */
+    return !field("isSourceCloudOne").toBool();
 }
 
 bool UIWizardImportAppPageBasic2::validatePage()

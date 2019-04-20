@@ -30,6 +30,13 @@
 
 
 /*********************************************************************************************************************************
+*   Internal Functions                                                                                                           *
+*********************************************************************************************************************************/
+static void apicSetInterruptFF(PVMCPU pVCpu, PDMAPICIRQ enmType);
+static void apicStopTimer(PVMCPU pVCpu);
+
+
+/*********************************************************************************************************************************
 *   Global Variables                                                                                                             *
 *********************************************************************************************************************************/
 #if XAPIC_HARDWARE_VERSION == XAPIC_HARDWARE_VERSION_P4
@@ -2969,8 +2976,13 @@ APICBOTHCBDECL(int) apicWriteMmio(PPDMDEVINS pDevIns, void *pvUser, RTGCPHYS GCP
  * @param   pVCpu           The cross context virtual CPU structure.
  * @param   enmType         The IRQ type.
  */
-VMM_INT_DECL(void) apicSetInterruptFF(PVMCPU pVCpu, PDMAPICIRQ enmType)
+static void apicSetInterruptFF(PVMCPU pVCpu, PDMAPICIRQ enmType)
 {
+#ifdef IN_RING3
+    /* IRQ state should be loaded as-is by "LoadExec". Changes can be made from LoadDone. */
+    Assert(pVCpu->pVMR3->enmVMState != VMSTATE_LOADING || PDMR3HasLoadedState(pVCpu->pVMR3));
+#endif
+
     switch (enmType)
     {
         case PDMAPICIRQ_HARDWARE:
@@ -3027,6 +3039,11 @@ VMM_INT_DECL(void) apicSetInterruptFF(PVMCPU pVCpu, PDMAPICIRQ enmType)
  */
 VMM_INT_DECL(void) apicClearInterruptFF(PVMCPU pVCpu, PDMAPICIRQ enmType)
 {
+#ifdef IN_RING3
+    /* IRQ state should be loaded as-is by "LoadExec". Changes can be made from LoadDone. */
+    Assert(pVCpu->pVMR3->enmVMState != VMSTATE_LOADING || PDMR3HasLoadedState(pVCpu->pVMR3));
+#endif
+
     /* NMI/SMI can't be cleared. */
     switch (enmType)
     {
@@ -3179,7 +3196,7 @@ VMM_INT_DECL(void) apicStartTimer(PVMCPU pVCpu, uint32_t uInitialCount)
  * @param   pVCpu               The cross context virtual CPU structure.
  * @thread  Any.
  */
-VMM_INT_DECL(void) apicStopTimer(PVMCPU pVCpu)
+static void apicStopTimer(PVMCPU pVCpu)
 {
     Assert(pVCpu);
     PAPICCPU pApicCpu = VMCPU_TO_APICCPU(pVCpu);

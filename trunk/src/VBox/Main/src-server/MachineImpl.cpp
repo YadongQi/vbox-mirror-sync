@@ -4837,14 +4837,14 @@ HRESULT Machine::getExtraData(const com::Utf8Str &aKey,
    */
 HRESULT Machine::setExtraData(const com::Utf8Str &aKey, const com::Utf8Str &aValue)
 {
-    /* Because non-ASCII characters in aKey have caused problems in the settings
+    /* Because control characters in aKey have caused problems in the settings
      * they are rejected unless the key should be deleted. */
     if (!aValue.isEmpty())
     {
         for (size_t i = 0; i < aKey.length(); ++i)
         {
             char ch = aKey[i];
-            if (RT_C_IS_CNTRL(ch))
+            if (RTLocCIsCntrl(ch))
                 return E_INVALIDARG;
         }
     }
@@ -9909,6 +9909,10 @@ HRESULT Machine::i_saveSettings(bool *pfNeedsGlobalSaveSettings,
 
     AssertReturn(!i_isSnapshotMachine(),
                  E_FAIL);
+
+    if (!mData->mAccessible)
+        return setError(VBOX_E_INVALID_VM_STATE,
+                        tr("The machine is not accessible, so cannot save settings"));
 
     HRESULT rc = S_OK;
     bool fNeedsWrite = false;

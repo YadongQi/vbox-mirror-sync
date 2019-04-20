@@ -37,6 +37,9 @@
 #include "UIWizardImportAppPageBasic1.h"
 #include "UIWizardImportAppPageBasic2.h"
 
+/* COM includes: */
+#include "CStringArray.h"
+
 
 /*********************************************************************************************************************************
 *   Class UIWizardImportAppPage1 implementation.                                                                                 *
@@ -48,6 +51,8 @@ UIWizardImportAppPage1::UIWizardImportAppPage1(bool fImportFromOCIByDefault)
     , m_pSourceLabel(0)
     , m_pSourceComboBox(0)
     , m_pStackedLayout(0)
+    , m_pLocalContainerLayout(0)
+    , m_pFileLabel(0)
     , m_pFileSelector(0)
     , m_pCloudContainerLayout(0)
     , m_pAccountLabel(0)
@@ -277,25 +282,43 @@ void UIWizardImportAppPage1::populateAccountInstances()
             msgCenter().cannotCreateCloudClient(m_comCloudProfile);
         else
         {
-            /* Read Cloud Client instances: */
-            QVector<QString> vmNames;
-            /*const QVector<QString> vmIDs =*/
-            m_comCloudClient.ListInstances(KCloudMachineState_Running, vmNames);
+            /* Read Cloud Client VM instances: */
+            CStringArray comNames;
+            CStringArray comIDs;
+            CProgress comProgress = m_comCloudClient.ListInstances(KCloudMachineState_Running, comNames, comIDs);
+
             /* Show error message if necessary: */
             if (!m_comCloudClient.isOk())
                 msgCenter().cannotAcquireCloudClientParameter(m_comCloudClient);
             else
             {
-                /* Push acquired names to list rows: */
-                for (int i = 0; i < vmNames.size(); ++i)
+                /* Show "Acquire cloud instances" progress: */
+                msgCenter().showModalProgressDialog(comProgress,
+                                                    UIWizardImportApp::tr("Acquire cloud instances..."),
+                                                    ":/progress_reading_appliance_90px.png",
+                                                    0, 0);
+
+                /* Show error message if necessary: */
+                if (!comProgress.isOk() || comProgress.GetResultCode() != 0)
+                    msgCenter().cannotAcquireCloudClientParameter(comProgress);
+                else
                 {
-                    /* Create list item: */
-                    QListWidgetItem *pItem = new QListWidgetItem(vmNames.at(i), m_pAccountInstanceList);
-                    if (pItem)
+                    /* Push acquired names to list rows: */
+                    const QVector<QString> &names = comNames.GetValues();
+                    const QVector<QString> &ids = comIDs.GetValues();
+                    for (int i = 0; i < names.size(); ++i)
                     {
-                        /* Make item non-editable: */
-                        pItem->setFlags(pItem->flags() & ~Qt::ItemIsEditable);
+                        /* Create list item: */
+                        QListWidgetItem *pItem = new QListWidgetItem(names.at(i), m_pAccountInstanceList);
+                        if (pItem)
+                        {
+                            pItem->setFlags(pItem->flags() & ~Qt::ItemIsEditable);
+                            pItem->setData(Qt::UserRole, ids.at(i));
+                        }
                     }
+                    /* Choose the 1st one by default if possible: */
+                    if (m_pAccountInstanceList->count())
+                        m_pAccountInstanceList->setCurrentRow(0);
                 }
             }
         }
@@ -380,14 +403,20 @@ QString UIWizardImportAppPage1::profileName() const
     return m_pAccountComboBox->itemData(iIndex, AccountData_ProfileName).toString();
 }
 
+QString UIWizardImportAppPage1::machineId() const
+{
+    QListWidgetItem *pItem = m_pAccountInstanceList->currentItem();
+    return pItem ? pItem->data(Qt::UserRole).toString() : QString();
+}
+
 CCloudProfile UIWizardImportAppPage1::profile() const
 {
     return m_comCloudProfile;
 }
 
-CCloudClient UIWizardImportAppPage1::client() const
+CVirtualSystemDescriptionForm UIWizardImportAppPage1::vsdForm() const
 {
-    return m_comCloudClient;
+    return m_comVSDForm;
 }
 
 
@@ -397,18 +426,19 @@ CCloudClient UIWizardImportAppPage1::client() const
 
 UIWizardImportAppPageBasic1::UIWizardImportAppPageBasic1(bool fImportFromOCIByDefault)
     : UIWizardImportAppPage1(fImportFromOCIByDefault)
-    , m_pLabel(0)
+    , m_pLabelMain(0)
+    , m_pLabelDescription(0)
 {
     /* Create main layout: */
     QVBoxLayout *pMainLayout = new QVBoxLayout(this);
     if (pMainLayout)
     {
-        /* Create label: */
-        m_pLabel = new QIRichTextLabel(this);
-        if (m_pLabel)
+        /* Create main label: */
+        m_pLabelMain = new QIRichTextLabel(this);
+        if (m_pLabelMain)
         {
             /* Add into layout: */
-            pMainLayout->addWidget(m_pLabel);
+            pMainLayout->addWidget(m_pLabelMain);
         }
 
         /* Create source layout: */
@@ -422,21 +452,25 @@ UIWizardImportAppPageBasic1::UIWizardImportAppPageBasic1(bool fImportFromOCIByDe
             m_pSourceLabel = new QLabel(this);
             if (m_pSourceLabel)
             {
-                m_pSourceLabel->hide();
-
                 /* Add into layout: */
                 m_pSourceLayout->addWidget(m_pSourceLabel, 0, 0, Qt::AlignRight);
             }
-
             /* Create source selector: */
             m_pSourceComboBox = new QIComboBox(this);
             if (m_pSourceComboBox)
             {
                 m_pSourceLabel->setBuddy(m_pSourceComboBox);
-                m_pSourceComboBox->hide();
 
                 /* Add into layout: */
                 m_pSourceLayout->addWidget(m_pSourceComboBox, 0, 1);
+            }
+
+            /* Create description label: */
+            m_pLabelDescription = new QIRichTextLabel(this);
+            if (m_pLabelDescription)
+            {
+                /* Add into layout: */
+                m_pSourceLayout->addWidget(m_pLabelDescription, 1, 0, 1, 2);
             }
 
             /* Add into layout: */
@@ -452,27 +486,35 @@ UIWizardImportAppPageBasic1::UIWizardImportAppPageBasic1(bool fImportFromOCIByDe
             if (pLocalContainer)
             {
                 /* Create local container layout: */
-                QVBoxLayout *pLocalContainerLayout = new QVBoxLayout(pLocalContainer);
-                if (pLocalContainerLayout)
+                m_pLocalContainerLayout = new QGridLayout(pLocalContainer);
+                if (m_pLocalContainerLayout)
                 {
-                    pLocalContainerLayout->setContentsMargins(0, 0, 0, 0);
-                    pLocalContainerLayout->setSpacing(0);
+                    m_pLocalContainerLayout->setContentsMargins(0, 0, 0, 0);
+                    m_pLocalContainerLayout->setColumnStretch(0, 0);
+                    m_pLocalContainerLayout->setColumnStretch(1, 1);
+                    m_pLocalContainerLayout->setRowStretch(2, 1);
+
+                    /* Create file label: */
+                    m_pFileLabel = new QLabel;
+                    if (m_pFileLabel)
+                    {
+                        /* Add into layout: */
+                        m_pLocalContainerLayout->addWidget(m_pFileLabel, 0, 0, Qt::AlignRight);
+                    }
 
                     /* Create file-path selector: */
                     m_pFileSelector = new UIEmptyFilePathSelector(this);
                     if (m_pFileSelector)
                     {
+                        m_pFileLabel->setBuddy(m_pFileSelector);
                         m_pFileSelector->setHomeDir(vboxGlobal().documentsPath());
                         m_pFileSelector->setMode(UIEmptyFilePathSelector::Mode_File_Open);
                         m_pFileSelector->setButtonPosition(UIEmptyFilePathSelector::RightPosition);
                         m_pFileSelector->setEditable(true);
 
                         /* Add into layout: */
-                        pLocalContainerLayout->addWidget(m_pFileSelector);
+                        m_pLocalContainerLayout->addWidget(m_pFileSelector, 0, 1);
                     }
-
-                    /* Add stretch: */
-                    pLocalContainerLayout->addStretch();
                 }
 
                 /* Add into layout: */
@@ -613,12 +655,15 @@ UIWizardImportAppPageBasic1::UIWizardImportAppPageBasic1(bool fImportFromOCIByDe
             this, &UIWizardImportAppPageBasic1::sltHandleAccountComboChange);
     connect(m_pAccountToolButton, &QIToolButton::clicked,
             this, &UIWizardImportAppPageBasic1::sltHandleAccountButtonClick);
+    connect(m_pAccountInstanceList, &QListWidget::currentRowChanged,
+            this, &UIWizardImportAppPageBasic1::completeChanged);
 
     /* Register fields: */
     registerField("source", this, "source");
     registerField("isSourceCloudOne", this, "isSourceCloudOne");
     registerField("profile", this, "profile");
-    registerField("client", this, "client");
+    registerField("vsdForm", this, "vsdForm");
+    registerField("machineId", this, "machineId");
 }
 
 bool UIWizardImportAppPageBasic1::event(QEvent *pEvent)
@@ -646,10 +691,10 @@ void UIWizardImportAppPageBasic1::retranslateUi()
     /* Translate page: */
     setTitle(UIWizardImportApp::tr("Appliance to import"));
 
-    /* Translate label: */
-    m_pLabel->setText(UIWizardImportApp::tr("<p>VirtualBox currently supports importing appliances "
-                                            "saved in the Open Virtualization Format (OVF). "
-                                            "To continue, select the file to import below.</p>"));
+    /* Translate main label: */
+    m_pLabelMain->setText(UIWizardImportApp::tr("Please choose the source to import appliance from.  This can be a "
+                                                "local file system to import OVF archive or one of known  cloud "
+                                                "service providers to import cloud VM from."));
 
     /* Translate source label: */
     m_pSourceLabel->setText(tr("&Source:"));
@@ -665,17 +710,19 @@ void UIWizardImportAppPageBasic1::retranslateUi()
             m_pSourceComboBox->setItemData(i, UIWizardImportApp::tr("Import from cloud service provider."), Qt::ToolTipRole);
         }
 
-    /* Translate file selector: */
+    /* Translate local stuff: */
+    m_pFileLabel->setText(UIWizardImportApp::tr("&File:"));
     m_pFileSelector->setChooseButtonToolTip(UIWizardImportApp::tr("Choose a virtual appliance file to import..."));
     m_pFileSelector->setFileDialogTitle(UIWizardImportApp::tr("Please choose a virtual appliance file to import"));
     m_pFileSelector->setFileFilters(UIWizardImportApp::tr("Open Virtualization Format (%1)").arg("*.ova *.ovf"));
 
-    /* Translate Account labels: */
+    /* Translate cloud stuff: */
     m_pAccountLabel->setText(UIWizardImportApp::tr("&Account:"));
     m_pAccountInstanceLabel->setText(UIWizardImportApp::tr("&Machines:"));
 
     /* Adjust label widths: */
     QList<QWidget*> labels;
+    labels << m_pFileLabel;
     labels << m_pSourceLabel;
     labels << m_pAccountLabel;
     labels << m_pAccountInstanceLabel;
@@ -683,6 +730,7 @@ void UIWizardImportAppPageBasic1::retranslateUi()
     foreach (QWidget *pLabel, labels)
         iMaxWidth = qMax(iMaxWidth, pLabel->minimumSizeHint().width());
     m_pSourceLayout->setColumnMinimumWidth(0, iMaxWidth);
+    m_pLocalContainerLayout->setColumnMinimumWidth(0, iMaxWidth);
     m_pCloudContainerLayout->setColumnMinimumWidth(0, iMaxWidth);
 
     /* Update page appearance: */
@@ -714,7 +762,8 @@ bool UIWizardImportAppPageBasic1::isComplete() const
                       && QFile::exists(m_pFileSelector->path()))
                   || (   fCSP
                       && !m_comCloudProfile.isNull()
-                      && !m_comCloudClient.isNull());
+                      && !m_comCloudClient.isNull()
+                      && !machineId().isNull());
     }
 
     return fResult;
@@ -722,22 +771,80 @@ bool UIWizardImportAppPageBasic1::isComplete() const
 
 bool UIWizardImportAppPageBasic1::validatePage()
 {
-    /* Get import appliance widget: */
-    ImportAppliancePointer pImportApplianceWidget = field("applianceWidget").value<ImportAppliancePointer>();
-    AssertMsg(!pImportApplianceWidget.isNull(), ("Appliance Widget is not set!\n"));
-
-    /* If file name was changed: */
-    if (m_pFileSelector->isModified())
+    if (isSourceCloudOne())
     {
-        /* Check if set file contains valid appliance: */
-        if (!pImportApplianceWidget->setFile(m_pFileSelector->path()))
-            return false;
-        /* Reset the modified bit afterwards: */
-        m_pFileSelector->resetModified();
-    }
+        /* Read Cloud Client description form: */
+        CVirtualSystemDescriptionForm comForm;
+        CProgress comProgress = m_comCloudClient.GetExportLaunchDescriptionForm(comForm);
 
-    /* If we have a valid ovf proceed to the appliance settings page: */
-    return pImportApplianceWidget->isValid();
+        /* Show error message if necessary: */
+        if (!m_comCloudClient.isOk())
+        {
+            msgCenter().cannotAcquireCloudClientParameter(m_comCloudClient);
+            return false;
+        }
+        else
+        {
+            /* Show "Acquire export form" progress: */
+            msgCenter().showModalProgressDialog(comProgress,
+                                                UIWizardImportApp::tr("Acquire export form..."),
+                                                ":/progress_reading_appliance_90px.png",
+                                                0, 0);
+
+            /* Show error message if necessary: */
+            if (!comProgress.isOk() || comProgress.GetResultCode() != 0)
+            {
+                msgCenter().cannotAcquireCloudClientParameter(m_comCloudClient);
+                return false;
+            }
+            else
+                m_comVSDForm = comForm;
+        }
+        return true;
+    }
+    else
+    {
+        /* Get import appliance widget: */
+        ImportAppliancePointer pImportApplianceWidget = field("applianceWidget").value<ImportAppliancePointer>();
+        AssertMsg(!pImportApplianceWidget.isNull(), ("Appliance Widget is not set!\n"));
+
+        /* If file name was changed: */
+        if (m_pFileSelector->isModified())
+        {
+            /* Check if set file contains valid appliance: */
+            if (!pImportApplianceWidget->setFile(m_pFileSelector->path()))
+                return false;
+            /* Reset the modified bit afterwards: */
+            m_pFileSelector->resetModified();
+        }
+
+        /* If we have a valid ovf proceed to the appliance settings page: */
+        return pImportApplianceWidget->isValid();
+    }
+}
+
+void UIWizardImportAppPageBasic1::updatePageAppearance()
+{
+    /* Call to base-class: */
+    UIWizardImportAppPage1::updatePageAppearance();
+
+    /* Update page appearance according to chosen storage-type: */
+    if (isSourceCloudOne())
+    {
+        m_pLabelDescription->setText(UIWizardImportApp::
+                                     tr("<p>Please choose one of cloud service accounts you have registered to import virtual "
+                                        "machine from.  Corresponding machines list will be updated.  To continue, "
+                                        "select one of machines to import below.</p>"));
+        m_pAccountInstanceList->setFocus();
+    }
+    else
+    {
+        m_pLabelDescription->setText(UIWizardImportApp::
+                                     tr("<p>Please choose a file to import the virtual appliance from.  VirtualBox currently "
+                                        "supports importing appliances saved in the Open Virtualization Format (OVF).  "
+                                        "To continue, select the file to import below.</p>"));
+        m_pFileSelector->setFocus();
+    }
 }
 
 void UIWizardImportAppPageBasic1::sltHandleSourceChange()

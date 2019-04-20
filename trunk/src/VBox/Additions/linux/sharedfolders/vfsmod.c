@@ -210,6 +210,7 @@ static int vbsf_super_info_alloc_and_map_it(struct vbsf_mount_info_new *info, st
     struct vbsf_super_info *pSuperInfo;
 
     TRACE();
+    *sf_gp = NULL; /* (old gcc maybe used initialized) */
 
     /*
      * Validate info.
@@ -360,7 +361,7 @@ static int vbsf_init_backing_dev(struct super_block *sb, struct vbsf_super_info 
 # endif
     struct backing_dev_info *bdi;
 
-#  if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+#  if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
     rc = super_setup_bdi_name(sb, "vboxsf-%llu", (unsigned long long)idSeqMine);
     if (!rc)
         bdi = sb->s_bdi;
@@ -405,7 +406,7 @@ static int vbsf_init_backing_dev(struct super_block *sb, struct vbsf_super_info 
 #  endif
 # endif /* >= 2.6.12 */
 
-# if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 12, 0)
     rc = bdi_init(&pSuperInfo->bdi);
 #  if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
     if (!rc)
